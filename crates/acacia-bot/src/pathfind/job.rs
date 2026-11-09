@@ -7,7 +7,7 @@ use acacia_world::{BlockRegistry, World};
 use tokio::sync::oneshot;
 
 use super::astar::{Path, SearchOpts};
-use super::astar::search_cached;
+use super::dstar::{DStarState, search_engine};
 use super::cache::RolloutCache;
 use super::goal::Goal;
 use super::snapshot::WorldBlocks;
@@ -26,11 +26,13 @@ pub struct SearchJob {
     pub opts: SearchOpts,
     /// Macro-move results shared by every search of one goto, running ones included.
     pub cache: Arc<RolloutCache>,
+    /// The bot's incremental table (t145); `None` only for searches that are not driving a bot.
+    pub dstar: Option<Arc<std::sync::Mutex<Option<DStarState>>>>,
 }
 
 impl SearchJob {
     pub fn run<B: Blocks>(&self, t: &Terrain<B>) -> Path {
-        search_cached(t, &self.from, &self.goal, &self.opts, &self.cache)
+        search_engine(t, &self.from, &self.goal, &self.opts, &self.cache, self.dstar.as_ref().map(|a| &**a))
     }
 
     /// Runs on tokio's blocking pool against `world` as it is while it runs.

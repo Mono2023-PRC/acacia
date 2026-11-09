@@ -929,12 +929,31 @@ fn walk_details(tried: Vec<&'static str>, stuck_at: Option<[i32; 3]>, target: Op
 /// `None` means **this walk was not refused by the planner** (it timed out, or the terrain answered first), and then
 /// no `plan` key is written at all: attaching the previous walk's numbers to this failure would be worse than saying
 /// nothing, since the caller would act on a budget that is not the one that ran out.
-/// One stderr line naming the search a planning operation just ran (t149): `[plan] nodes=320 cost=12.50`.
+/// One stderr line naming the search a planning operation just ran (t149):
+/// `[plan] engine=dstar nodes=320 cost=12.50 reused=true fallback=none`.
 ///
-/// The field order is fixed because these lines are read by eye in a real-server log and diffed between two walks.
-/// The engine and its fallback used to be part of the line; with A* as the only planner (t154) there is nothing to name.
+/// The field order is fixed because these lines are read by eye in a real-server log and diffed between two
+/// walks, and `fallback` is spelled from [`PlanStats::fallback_reason`] rather than parsed back out of a
+/// message: `none` when the engine that planned the walk also finished it, `astar:<why>` when it did not.
+/// `astar:dynamic` is one of the legitimate values (the hazards/favour goals go straight to A* on purpose),
+/// so it is a value here and never an error.
 fn plan_line(stats: &PlanStats) -> String {
-    format!("[plan] nodes={} cost={:.2}", stats.nodes_expanded, stats.cost)
+    format!(
+        "[plan] engine={} nodes={} cost={:.2} reused={} fallback={}",
+        stats.engine_used,
+        stats.nodes_expanded,
+        stats.cost,
+        stats.reused,
+        plan_fallback(stats.fallback_reason),
+    )
+}
+
+/// `none`, or `astar:<why>` — the reason the planned engine did not finish the search (t145/t150).
+fn plan_fallback(reason: Option<&str>) -> String {
+    match reason {
+        Some(why) => format!("astar:{why}"),
+        None => "none".to_owned(),
+    }
 }
 
 /// The one thing the trace needs from the bot, so the take-and-print rule can be tested without a server (t149).
@@ -5194,10 +5213,20 @@ mod plan_trace_tests {
 
     use acacia_bot::pathfind::PlanStats;
 
-    use super::{PlanSource, trace_plan};
+    use super::{PlanSource, plan_fallback, trace_plan};
 
-    fn stats_of(nodes: usize, cost: f32) -> PlanStats {
-        PlanStats { nodes_expanded: nodes, max_nodes: 20_000, cost, ..PlanStats::default() }
+    fn stats_of(engine: &'static str, nodes: usize, cost: f32, reused: bool, fallback: Option<&'static str>) -> PlanStats {
+        PlanStats {
+            nodes_expanded: nodes,
+            max_nodes: 20_000,
+            budget_exhausted: false,
+            target_region_reached: true,
+            closest_short: None,
+            engine_used: engine,
+            fallback_reason: fallback,
+            cost,
+            reused,
+        }
     }
 
     /// The bot's plan slot, as the trace sees it: `take` empties it, exactly like `Bot::take_plan_stats` (t150).
@@ -5242,7 +5271,7 @@ mod plan_trace_tests {
     /// operation just because this run never asked for the line (t149).
     #[test]
     fn the_switch_off_prints_nothing_but_still_takes_the_report() {
-        let plans = FakePlans::holding(stats_of(320, 12.5));
+        let plans = FakePlans::holding(stats_of(PlanStats::DSTAR, 320, 12.5, true, None));
         assert!(collect(&plans, false).is_empty(), "a silent default is the whole contract");
         assert_eq!(plans.takes(), 1, "the report must still be drained");
         assert!(plans.slot.borrow().is_none(), "drained means empty");
@@ -5251,67 +5280,9 @@ mod plan_trace_tests {
     /// Exactly one line, and the fields in the order the log reader expects.
     #[test]
     fn the_switch_on_prints_exactly_one_line_in_a_fixed_order() {
-        let plans = FakePlans::holding(stats_of(320, 12.5));
+        let plans = FakePlans::holding(stats_of(PlanStats::DSTAR, 320, 12.5, true, None));
         let lines = collect(&plans, true);
-        assert_eq!(lines, vec!["[plan] nodes=320 cost=12.50".to_owned()]);
-    }
-
-    /// The line's shape, from the other side: three fields, one space each, no trailing space (t155).
-    ///
-    /// A reader diffs these lines between two walks, so a doubled space or a trailing one turns a `diff` into
-    /// noise that looks like a behaviour change.
-    #[test]
-    fn the_line_is_three_fields_with_single_spaces_and_nothing_after_the_cost() {
-        let plans = FakePlans::holding(stats_of(320, 12.5));
-        let line = collect(&plans, true).remove(0);
-        assert_eq!(line, "[plan] nodes=320 cost=12.50", "the exact line, byte for byte");
-        assert_eq!(line.trim_end(), line, "no trailing space: {line:?}");
-        assert_eq!(line.trim_start(), line, "no leading space: {line:?}");
-        assert!(!line.contains("  "), "one space between fields, not two: {line:?}");
-        assert_eq!(line.split(' ').count(), 3, "tag + two fields, nothing more: {line:?}");
-    }
-
-    /// The three D* Lite words are gone from the line, not merely unused (t155).
-    ///
-    /// Someone reading a real-server log greps for `engine` or `fallback`; after t154 there is no second
-    /// planner and no fallback, so a line that still carried the words would be a claim the code cannot back.
-    #[test]
-    fn the_line_no_longer_names_an_engine_a_fallback_or_a_reuse() {
-        for (nodes, cost) in [(320usize, 12.5f32), (5, 14.13), (49_960, 0.0)] {
-            let plans = FakePlans::holding(stats_of(nodes, cost));
-            let line = collect(&plans, true).remove(0);
-            for gone in ["engine", "fallback", "reused", "dstar", "astar"] {
-                assert!(!line.contains(gone), "{line} must not mention {gone:?} any more (t155)");
-            }
-        }
-    }
-
-    /// `nodes` before `cost`: the order is part of the format, not an accident of the format string (t155).
-    #[test]
-    fn nodes_comes_before_cost() {
-        let plans = FakePlans::holding(stats_of(320, 12.5));
-        let line = collect(&plans, true).remove(0);
-        let nodes = line.find("nodes=").expect("the line names the node count");
-        let cost = line.find("cost=").expect("the line names the cost");
-        assert!(nodes < cost, "nodes must come before cost: {line}");
-        assert_eq!(&line[..nodes], "[plan] ", "the tag opens the line: {line}");
-    }
-
-    /// Two decimals, always — including the values that round (a reader must not see `12.5` one walk and
-    /// `12.50` the next, or `12` when the price is a fraction) (t155).
-    #[test]
-    fn cost_always_prints_two_decimals() {
-        for (cost, want) in [(12.4999f32, "12.50"), (12.5, "12.50"), (0.0, "0.00"), (123.456, "123.46"), (14.13, "14.13")] {
-            let plans = FakePlans::holding(stats_of(320, cost));
-            let line = collect(&plans, true).remove(0);
-            assert_eq!(line, format!("[plan] nodes=320 cost={want}"), "cost {cost} must print as {want}");
-        }
-    }
-
-    /// The shell's own default is silence; `main` copies `config.agent.plan_trace` into this flag (t149/t155).
-    #[test]
-    fn the_shell_defaults_to_silence() {
-        assert!(!super::ShellConfig::default().plan_trace, "an unasked-for trace must stay quiet");
+        assert_eq!(lines, vec!["[plan] engine=dstar nodes=320 cost=12.50 reused=true fallback=none".to_owned()]);
     }
 
     /// A walk that never searched has nothing to say — the line is about a search, not about a tool.
@@ -5322,12 +5293,30 @@ mod plan_trace_tests {
         assert_eq!(plans.takes(), 1, "the slot is checked once per operation");
     }
 
-    /// The line is numbers, not a verdict — the reader must not think the walk went wrong (t149).
+    /// `none` and the two ways the planned engine can hand off, straight from `fallback_reason`.
     #[test]
-    fn the_line_carries_numbers_and_not_a_judgement() {
-        let plans = FakePlans::holding(stats_of(41, 3.25));
+    fn the_fallback_value_names_the_engine_that_finished() {
+        assert_eq!(plan_fallback(None), "none");
+        let handoff = |why| {
+            let plans = FakePlans::holding(stats_of(PlanStats::DSTAR, 900, 7.0, false, Some(why)));
+            collect(&plans, true).remove(0)
+        };
+        assert!(handoff("no_path").ends_with("fallback=astar:no_path"), "a fallback names both engine and reason");
+        assert!(handoff("budget").ends_with("fallback=astar:budget"));
+    }
+
+    /// `astar:dynamic` is a deliberate pass to A* (hazards/favour), so it is a value in the line and never a
+    /// verdict: no `error`, no `fail`, no `warn` — the reader must not think the walk went wrong (t149).
+    #[test]
+    fn dynamic_is_a_value_and_not_a_complaint() {
+        let plans = FakePlans::holding(stats_of(PlanStats::ASTAR, 41, 3.25, false, Some("dynamic")));
         let line = collect(&plans, true).remove(0);
-        assert_eq!(line, "[plan] nodes=41 cost=3.25", "the line carries the numbers, not a judgement");
+        assert!(line.ends_with("fallback=astar:dynamic"), "{line}");
+        assert_eq!(
+            line,
+            "[plan] engine=astar nodes=41 cost=3.25 reused=false fallback=astar:dynamic",
+            "the line carries the numbers, not a judgement"
+        );
         for word in ["error", "fail", "warn", "refus", "retry"] {
             assert!(!line.to_ascii_lowercase().contains(word), "{line} must not read as a complaint ({word})");
         }
@@ -5337,14 +5326,14 @@ mod plan_trace_tests {
     /// its own — the P2 case, where reading `last` would hand the second walk the first walk's price.
     #[test]
     fn each_search_is_taken_once_and_reports_its_own_cost() {
-        let plans = FakePlans::holding(stats_of(120, 12.5));
+        let plans = FakePlans::holding(stats_of(PlanStats::DSTAR, 120, 12.5, true, None));
         let first = collect(&plans, true).remove(0);
         assert!(first.contains("cost=12.50"), "{first}");
 
         // Nothing new searched yet: no second line, and no repeat of the first one.
         assert!(collect(&plans, true).is_empty(), "a drained slot cannot be read twice");
 
-        plans.put(stats_of(260, 5.0));
+        plans.put(stats_of(PlanStats::DSTAR, 260, 5.0, true, None));
         let second = collect(&plans, true).remove(0);
         assert!(second.contains("cost=5.00"), "{second}");
         assert_ne!(first, second, "two searches must not report the same numbers");

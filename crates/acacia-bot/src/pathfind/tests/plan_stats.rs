@@ -140,12 +140,12 @@ fn a_refusal_fills_the_slot_and_the_next_accepted_path_replaces_it() {
     assert!(refused.is_err(), "an unreachable answer is a refusal");
     assert_eq!(slot.lock().unwrap().to_owned(), Some(plan), "the numbers the message carries are readable as numbers");
 
-    let walked = crate::pathfind::PlanStats { nodes_expanded: 1, max_nodes: 200_000, budget_exhausted: false, target_region_reached: true, closest_short: Some(0.0), cost: 9.5, ..crate::pathfind::PlanStats::default() };
+    let walked = crate::pathfind::PlanStats { nodes_expanded: 1, max_nodes: 200_000, budget_exhausted: false, target_region_reached: true, closest_short: Some(0.0), cost: 9.5, reused: true, ..crate::pathfind::PlanStats::default() };
     let accepted = pilot.accept(answer(false, walked), START.into());
     assert!(accepted.is_ok(), "a reachable answer is taken");
     let now = slot.lock().unwrap().to_owned().expect("a walk that arrived still says how it was planned");
     assert_eq!(now, walked, "the slot describes this walk, price and all");
-    assert_eq!(now.cost, 9.5, "the numbers a caller reads are this search's");
+    assert_eq!((now.cost, now.reused), (9.5, true), "the numbers a caller reads are this search's");
     // ...and nothing of the refusal survives: not its distance, not its verdict about the neighbourhood. Replacing the
     // statistics in place would leave a caller unable to tell "9.5, reached" from "9.5, still 6 blocks short".
     assert_ne!(now, plan, "the refusal's report is gone, not edited in place");

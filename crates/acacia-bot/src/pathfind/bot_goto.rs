@@ -34,10 +34,10 @@ impl Bot {
 
     /// What the last search did (t117, widened in t150): `None` only when no search has run since the walk started.
     ///
-    /// The pilot writes this both when it gives up and when it arrives, so a caller reads what the search cost
-    /// (`cost`) and how much it had to look (`nodes_expanded`) — numbers instead of prose, on the successful path too.
-    /// `budget_exhausted` and `closest_short` still separate "the search was cut short" from "the goal is not
-    /// connected to here" when the walk was refused.
+    /// The pilot writes this both when it gives up and when it arrives, so a caller can read *which engine planned the
+    /// walk* (`engine_used`, `fallback_reason`), what it cost (`cost`) and whether it was incremental (`reused`) —
+    /// numbers instead of prose, on the successful path too. `budget_exhausted` and `closest_short` still separate
+    /// "the search was cut short" from "the goal is not connected to here" when the walk was refused.
     pub fn last_plan_stats(&self) -> Option<PlanStats> {
         self.plan_stats.lock().ok().and_then(|slot| *slot)
     }
@@ -75,14 +75,14 @@ mod t150_tests {
     use super::drain_stats;
     use crate::pathfind::PlanStats;
 
-    fn stats(cost: f32) -> PlanStats {
-        PlanStats { nodes_expanded: 7, max_nodes: 200_000, cost, ..PlanStats::default() }
+    fn stats(cost: f32, reused: bool) -> PlanStats {
+        PlanStats { nodes_expanded: 7, max_nodes: 200_000, cost, reused, engine_used: PlanStats::DSTAR, ..PlanStats::default() }
     }
 
     #[test]
     fn the_report_hands_the_last_search_over_exactly_once() {
-        let slot = Arc::new(Mutex::new(Some(stats(12.5))));
-        assert_eq!(drain_stats(&slot), Some(stats(12.5)), "the numbers survive the hand-over");
+        let slot = Arc::new(Mutex::new(Some(stats(12.5, true))));
+        assert_eq!(drain_stats(&slot), Some(stats(12.5, true)), "the numbers survive the hand-over");
         assert_eq!(drain_stats(&slot), None, "a drained slot cannot be read twice");
         assert_eq!(drain_stats(&slot), None, "and stays empty");
     }

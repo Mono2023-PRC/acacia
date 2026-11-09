@@ -84,6 +84,9 @@ pub struct Bot {
     /// which is the only thing that knows. The slot is per operation — [`Bot::goto_with`] clears it on entry — so
     /// `None` means "no search has run since this walk started", never "not searched".
     pub(crate) plan_stats: std::sync::Arc<std::sync::Mutex<Option<crate::pathfind::PlanStats>>>,
+    /// The D* Lite table (t145), next to `plan_stats` for the same reason: the pilot owns the searches, and only the
+    /// bot can hold state that has to outlive one of them. Dropped by the engine itself when it stops applying.
+    pub(crate) dstar: std::sync::Arc<std::sync::Mutex<Option<crate::pathfind::DStarState>>>,
     /// Physics bots: the simulation has started once, and the spawn packets went out with it.
     spawned: bool,
     strict: bool,
@@ -170,6 +173,7 @@ impl Bot {
             desync_ticks: 0,
             last_fight: None,
             plan_stats: Default::default(),
+            dstar: Default::default(),
             in_flight: Default::default(),
             lag: config.lag.map(LagLine::new),
             cancel: Default::default(),

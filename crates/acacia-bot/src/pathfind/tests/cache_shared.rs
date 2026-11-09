@@ -47,7 +47,7 @@ fn a_replan_during_a_plan_ahead_hits_the_cache() {
     let job = SearchJob { from: standing(c.from).state().cloned().expect("started"), goal: c.goal.clone(), opts: c.opts.clone(), cache: cache.clone(),
         // t145: the table is not what this test measures (macro rollout sharing is); A* keeps the comparison about
         // the cache alone.
-        };
+        dstar: None };
     std::thread::scope(|s| {
         let ahead = s.spawn(|| job.run(&Terrain::new(&gate, &g.registry)));
         started_rx.recv().expect("plan-ahead started");

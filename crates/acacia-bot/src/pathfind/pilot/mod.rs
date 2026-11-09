@@ -84,6 +84,8 @@ pub struct Pilot {
     /// Where a refusal is reported for the tool layer to read (`Bot::last_plan_stats`); `None` for pilots that are
     /// not driving a bot (tests, plan-ahead helpers).
     plan_sink: Option<Arc<std::sync::Mutex<Option<PlanStats>>>>,
+    /// The bot's D* Lite table (t145): searches reuse it when it still describes this goal from here.
+    dstar: Option<Arc<std::sync::Mutex<Option<super::dstar::DStarState>>>>,
     striker: Striker,
     field: Option<Arc<Hazards>>,
     perceived_at: Option<u64>,
@@ -101,13 +103,19 @@ impl Pilot {
         let (rng, guard) = (opts.seed.unwrap_or_else(seed), Guard::new(opts.give_up_ticks));
         let striker = Striker::new(opts.search.profile, rng.rotate_left(29));
         let (follower, pending, ahead, favour) = (None, None, Ahead::default(), None);
-        Self { goal, opts, follower, partial: false, pending, ahead, generation: 0, replans: 0, teleports: None, diverged: 0, diverged_in_air: false, divergences: 0, favour, guard, cache, rng, watch: Watch::default(), alarm: Alarm::default(), senses: Senses::new(rng.rotate_left(17)), striker, field: None, perceived_at: None, blocked_waits: 0, plan_sink: None }
+        Self { goal, opts, follower, partial: false, pending, ahead, generation: 0, replans: 0, teleports: None, diverged: 0, diverged_in_air: false, divergences: 0, favour, guard, cache, rng, watch: Watch::default(), alarm: Alarm::default(), senses: Senses::new(rng.rotate_left(17)), striker, field: None, perceived_at: None, blocked_waits: 0, plan_sink: None, dstar: None }
     }
 
     /// Reports refusals to `sink` (the bot's slot), so a tool layer can read the numbers of the last failed search
     /// without parsing its message (t117).
     pub fn reporting(mut self, sink: Arc<std::sync::Mutex<Option<PlanStats>>>) -> Self {
         self.plan_sink = Some(sink);
+        self
+    }
+
+    /// Hands over the bot's incremental table (t145), the way [`Pilot::reporting`] hands over the report slot.
+    pub fn reusing(mut self, dstar: Arc<std::sync::Mutex<Option<super::dstar::DStarState>>>) -> Self {
+        self.dstar = Some(dstar);
         self
     }
 
@@ -246,7 +254,7 @@ impl Pilot {
         self.guard.searched(live.on_ground);
         if inline {
             let quick_opts = SearchOpts { max_nodes: QUICK_NODES, budget: QUICK_BUDGET, max_rollout_ticks: QUICK_ROLLOUT_TICKS, ..opts.clone() };
-            let quick = super::astar::search_cached(terrain, &live, &self.goal, &quick_opts, &self.cache);
+            let quick = super::dstar::search_engine(terrain, &live, &self.goal, &quick_opts, &self.cache, self.dstar.as_ref().map(|a| &**a));
             // A plan whose macro budget ran out may have missed faster macro moves: search again in full. Moving, a
             // partial one beats stopping for the full search: plan-ahead extends it from its end.
             let moving = live.vel[0].hypot(live.vel[2]) > MOVING;
@@ -254,7 +262,7 @@ impl Pilot {
                 return self.accept(quick, live.pos);
             }
         }
-        let job = SearchJob { from: live, goal: self.goal.clone(), opts, cache: self.cache.clone() };
+        let job = SearchJob { from: live, goal: self.goal.clone(), opts, cache: self.cache.clone(), dstar: self.dstar.clone() };
         self.pending = Some(spawn(job));
         Ok(())
     }
@@ -276,8 +284,8 @@ impl Pilot {
             self.report(Some(path.plan));
             return Err(ActionError::NotPossible(unreachable_message(&self.goal, pos, path.plan)));
         }
-        // Reached: the slot now describes *this* search — what it cost and how much it had to look (t150). A tool layer
-        // that can only read refusals could not tell a cheap walk from an expensive one.
+        // Reached: the slot now describes *this* search — which engine planned it, what it cost, whether the table was
+        // reused (t150). A tool layer that can only read refusals cannot say "D* Lite planned this itself".
         self.report(Some(path.plan));
         (self.favour, self.diverged_in_air) = (None, false);
         if path.nodes.is_empty() && !path.complete {
@@ -363,7 +371,7 @@ mod t150_tests {
     use super::*;
 
     /// A finished path with nothing to walk (the numbers are what this test is about).
-    fn answer(cost: f32) -> Path {
+    fn answer(cost: f32, reused: bool) -> Path {
         Path {
             nodes: Vec::new(),
             complete: true,
@@ -371,7 +379,7 @@ mod t150_tests {
             cost,
             visited: 3,
             macro_stats: Default::default(),
-            plan: PlanStats { nodes_expanded: 3, max_nodes: 200_000, cost, ..PlanStats::default() },
+            plan: PlanStats { nodes_expanded: 3, max_nodes: 200_000, cost, reused, engine_used: PlanStats::DSTAR, ..PlanStats::default() },
         }
     }
 
@@ -381,19 +389,22 @@ mod t150_tests {
         let mut pilot = Pilot::new(Goal::Block([4, 1, 0]), GotoOpts::default()).reporting(slot.clone());
         assert!(slot.lock().unwrap().is_none(), "a fresh pilot has nothing to report");
 
-        assert!(pilot.accept(answer(12.5), [0.5, 1.0, 0.5].into()).is_ok());
+        assert!(pilot.accept(answer(12.5, true), [0.5, 1.0, 0.5].into()).is_ok());
         let reported = slot.lock().unwrap().expect("arriving reports the search, not nothing");
         assert_eq!(reported.cost, 12.5, "the price a caller compares between plans");
-        assert_eq!(reported.nodes_expanded, 3, "and how much looking it took");
+        assert!(reported.reused, "whether this walk was planned incrementally");
+        assert_eq!(reported.engine_used, PlanStats::DSTAR);
+        assert_eq!(reported.fallback_reason, None);
     }
 
     #[test]
     fn arriving_twice_reports_the_second_search() {
         let slot = Arc::new(Mutex::new(None));
         let mut pilot = Pilot::new(Goal::Block([4, 1, 0]), GotoOpts::default()).reporting(slot.clone());
-        assert!(pilot.accept(answer(12.5), [0.5, 1.0, 0.5].into()).is_ok());
-        assert!(pilot.accept(answer(3.0), [1.5, 1.0, 0.5].into()).is_ok());
+        assert!(pilot.accept(answer(12.5, true), [0.5, 1.0, 0.5].into()).is_ok());
+        assert!(pilot.accept(answer(3.0, false), [1.5, 1.0, 0.5].into()).is_ok());
         let reported = slot.lock().unwrap().expect("still reporting");
         assert_eq!(reported.cost, 3.0, "the slot describes the newest search, not the first");
+        assert!(!reported.reused);
     }
 }

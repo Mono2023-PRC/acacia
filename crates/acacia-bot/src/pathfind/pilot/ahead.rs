@@ -42,7 +42,7 @@ impl Pilot {
         }
         tracing::debug!(from = ?end.pos, "planning the next segment ahead");
         let from = end.mom.synth(end.pos, live);
-        let job = SearchJob { from, goal: self.goal.clone(), opts: SearchOpts { favour: None, ..opts.clone() }, cache: self.cache.clone() };
+        let job = SearchJob { from, goal: self.goal.clone(), opts: SearchOpts { favour: None, ..opts.clone() }, cache: self.cache.clone(), dstar: None };
         self.guard.searches += 1;
         self.ahead.started_for = Some(key);
         self.ahead.answer = Some(spawn(job));

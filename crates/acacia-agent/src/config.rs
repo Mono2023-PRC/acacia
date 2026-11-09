@@ -21,8 +21,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 pub const MAX_TOKENS_ENV: &str = "ACACIA_LLM_MAX_TOKENS";
 
 /// The environment variable that turns the pathfinding trace on (t149): every `move_to`, `dig` and `place`
-/// that ran a search prints one `[plan] nodes=… cost=…` line to stderr (two fields since t155: master has
-/// a single engine, so `engine`/`fallback`/`reused` stopped saying anything).
+/// that ran a search prints one `[plan] engine=… nodes=… cost=… reused=… fallback=…` line to stderr.
 ///
 /// Off unless asked for: the line is diagnostic, `serve` shares stderr with its supervisor, and a silent
 /// default is what keeps the existing output byte-for-byte unchanged.

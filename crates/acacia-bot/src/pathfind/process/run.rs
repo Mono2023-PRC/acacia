@@ -79,6 +79,7 @@ impl Processes {
         // Where a refused search reports its numbers (t117): the pilot lives down there and only the bot has the slot.
         self.arbiter.adopt_plan_sink(bot.plan_stats.clone());
         // The incremental search table outlives a walk the same way the report slot does (t145).
+        self.arbiter.adopt_dstar(bot.dstar.clone());
         let Some(movement) = bot.movement.as_ref() else {
             return Err(ActionError::NotPossible("processes need a physics bot (BotConfig.physics)".into()));
         };

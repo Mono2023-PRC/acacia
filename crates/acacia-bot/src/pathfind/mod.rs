@@ -51,6 +51,7 @@ mod node;
 mod opts;
 mod physview;
 mod pickup;
+mod dstar;
 pub(crate) mod pilot;
 pub mod process;
 mod profile;
@@ -68,7 +69,8 @@ mod work;
 mod tests;
 
 pub use astar::{Path, SearchOpts, search, search_cached, search_from, start_node};
-pub use opts::PlanStats;
+pub use opts::{Algorithm, PlanStats};
+pub use dstar::{DStarState, Reset, plan_with};
 pub use cache::RolloutCache;
 pub use macros::MacroStats;
 pub use control::{Controller, Phase, RunCtl};

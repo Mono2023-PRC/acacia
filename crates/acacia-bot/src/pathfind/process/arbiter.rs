@@ -54,6 +54,8 @@ pub struct Arbiter {
     outcomes: HashMap<ProcId, Result<(), ActionError>>,
     /// Where pilots report a refused search (t117); taken from the bot on the first tick.
     plan_sink: Option<Arc<std::sync::Mutex<Option<super::super::opts::PlanStats>>>>,
+    /// The bot's incremental search table (t145); handed to every [`Pilot`] this arbiter builds.
+    dstar: Option<Arc<std::sync::Mutex<Option<crate::pathfind::DStarState>>>>,
 }
 
 impl Arbiter {
@@ -61,6 +63,14 @@ impl Arbiter {
     pub fn adopt_plan_sink(&mut self, sink: Arc<std::sync::Mutex<Option<super::super::opts::PlanStats>>>) {
         if self.plan_sink.is_none() {
             self.plan_sink = Some(sink);
+        }
+    }
+
+    /// Takes the bot's D* Lite table if it has not got one yet (t145), the way [`Arbiter::adopt_plan_sink`] takes the
+    /// report slot.
+    pub fn adopt_dstar(&mut self, dstar: Arc<std::sync::Mutex<Option<crate::pathfind::DStarState>>>) {
+        if self.dstar.is_none() {
+            self.dstar = Some(dstar);
         }
     }
 
@@ -197,6 +207,9 @@ impl Arbiter {
                 // (t117), so the refusal is readable as numbers and not only as a sentence.
                 if let Some(sink) = self.plan_sink.clone() {
                     pilot = pilot.reporting(sink);
+                }
+                if let Some(table) = self.dstar.clone() {
+                    pilot = pilot.reusing(table);
                 }
                 if let Some(old) = self.route.take() {
                     pilot.inherit(old.pilot);
