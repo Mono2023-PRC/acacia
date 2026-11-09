@@ -10,6 +10,7 @@ use super::cache::RolloutCache;
 use super::exit::{Exits, has_exit};
 use super::frontier::{Frontier, Popped, Rec};
 use super::goal::Goal;
+use super::opts::PlanStats;
 use super::macros::{self, MACRO_TIME_SHARE, MacroStats, Macros};
 use super::costs::CLASSIC_STARTUP;
 use super::moves::{self, Ctx, Edge, MoveKind};
@@ -60,7 +61,15 @@ pub fn search_from<B: Blocks>(t: &Terrain<B>, live: &PlayerState, goal: &Goal, o
 /// they were found for another profile or player.
 pub fn search_cached<B: Blocks>(t: &Terrain<B>, live: &PlayerState, goal: &Goal, opts: &SearchOpts, cache: &RolloutCache) -> Path {
     let started = Instant::now();
-    let empty = |complete| Path { nodes: Vec::new(), complete, unreachable: false, cost: 0.0, visited: 0, macro_stats: MacroStats::default() };
+    let empty = |complete| Path {
+        nodes: Vec::new(),
+        complete,
+        unreachable: false,
+        cost: 0.0,
+        visited: 0,
+        macro_stats: MacroStats::default(),
+        plan: PlanStats { max_nodes: opts.max_nodes, closest_short: None, ..PlanStats::default() },
+    };
     let Some((start, spot)) = start_node(t, live.pos) else { return empty(false) };
     if goal.success(start) {
         return empty(true);
@@ -75,6 +84,9 @@ pub fn search_cached<B: Blocks>(t: &Terrain<B>, live: &PlayerState, goal: &Goal,
     let mut front = Frontier::new(Rec::start(start, spot, Momentum::snap(live, start.pos)), goal, speed, opts.favour.as_deref(), opts.hazards.as_deref());
     let mut edges: Vec<Edge> = Vec::with_capacity(32);
     let (mut visited, mut leaps) = (0, 0usize);
+    // The closest this search ever came to the goal's neighbourhood (`Goal::region_distance`); `Some(0.0)` means it
+    // got there without the goal accepting a cell, which is what "the goal is walled off" looks like from inside.
+    let mut closest: Option<f32> = None;
     let macros = opts.macros.then(|| Macros {
         profile: opts.profile,
         leaps: opts.parkour,
@@ -113,8 +125,21 @@ pub fn search_cached<B: Blocks>(t: &Terrain<B>, live: &PlayerState, goal: &Goal,
             }
         };
         let rec = front.recs[i as usize];
+        // How close this search ever came to the goal's neighbourhood. Success implies it, but a *failed* search
+        // needs the number: 2 blocks short is "the goal is walled off", 40 blocks short is "we never got there".
+        if let Some(short) = goal.region_distance(rec.key.pos) {
+            closest = Some(closest.map_or(short, |c: f32| c.min(short)));
+        }
         if goal.success(rec.key.pos) {
-            return Path { nodes: front.reconstruct(i), complete: true, unreachable: false, cost: rec.raw, visited, macro_stats: stats(&ctx) };
+            return Path {
+                nodes: front.reconstruct(i),
+                complete: true,
+                unreachable: false,
+                cost: rec.raw,
+                visited,
+                macro_stats: stats(&ctx),
+                plan: PlanStats { nodes_expanded: visited, max_nodes: opts.max_nodes, budget_exhausted: false, target_region_reached: true, closest_short: Some(0.0), cost: rec.raw, ..PlanStats::default() },
+            };
         }
         visited += 1;
         // Checked often: a node with macro moves costs many rollouts.
@@ -154,5 +179,14 @@ pub fn search_cached<B: Blocks>(t: &Terrain<B>, live: &PlayerState, goal: &Goal,
         pick = r.parent;
     }
     let cost = front.recs[pick as usize].raw;
-    Path { nodes: front.reconstruct(pick), complete: false, unreachable, cost, visited, macro_stats }
+    let plan = PlanStats {
+        nodes_expanded: visited,
+        max_nodes: opts.max_nodes,
+        budget_exhausted: cut,
+        target_region_reached: closest == Some(0.0),
+        closest_short: closest,
+        cost,
+        ..PlanStats::default()
+    };
+    Path { nodes: front.reconstruct(pick), complete: false, unreachable, cost, visited, macro_stats, plan }
 }

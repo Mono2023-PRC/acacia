@@ -6,7 +6,8 @@ use acacia_physics::PlayerState;
 use acacia_world::{BlockRegistry, World};
 use tokio::sync::oneshot;
 
-use super::astar::{Path, SearchOpts, search_cached};
+use super::astar::{Path, SearchOpts};
+use super::astar::search_cached;
 use super::cache::RolloutCache;
 use super::goal::Goal;
 use super::snapshot::WorldBlocks;

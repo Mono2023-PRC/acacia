@@ -19,6 +19,7 @@ mod creative;
 mod enchant;
 mod enchants;
 mod furnace;
+mod get;
 mod grid;
 mod grindstone;
 mod held_grid;
@@ -28,6 +29,7 @@ mod pick;
 mod repair;
 mod shield;
 mod smithing;
+mod sources;
 mod trade;
 
 #[cfg(test)]
@@ -36,6 +38,8 @@ mod tests;
 pub use anvil_cost::AnvilCost;
 pub use beacon::BeaconEffect;
 pub use craft::CraftMode;
+pub use get::{GetError, GetOpts, GetReport, StepRun};
+pub use sources::{have_from, plan_get, Plan, PlanError, Source, Sources, Step, TABLE_BLOCK};
 pub use repair::max_durability;
 
 use acacia_client::proto::types::WindowType;
@@ -47,9 +51,18 @@ use crate::items::{Op, SlotRef};
 use crate::state::{GameState, Inventory, ItemStack};
 use crate::{ActionError, Bot};
 
+/// Beyond this from the eye a station is walked to before it is clicked: the click needs reach, and a
+/// table placed by a build step can be several blocks away (craft3x3 evidence: 6.11 blocks).
+const STATION_WALK: f32 = 4.0;
+
 impl Bot {
-    /// Opens the block at `pos` and checks that it shows one of `kinds`.
+    /// Opens the block at `pos` and checks that it shows one of `kinds`. A station out of reach is walked
+    /// to first (a placement usually leaves it a few blocks away).
     async fn open_station(&mut self, pos: BlockPos, kinds: &[WindowType]) -> Result<(), ActionError> {
+        if self.has_physics() && crate::interact::block_distance(self.eye_position(), pos) > STATION_WALK {
+            let opts = crate::pathfind::GotoOpts { tolerance: 0.3, ..crate::pathfind::GotoOpts::default() };
+            self.goto_with(crate::pathfind::Goal::Near(pos, 2.5), opts).await?;
+        }
         let open = self.open_container_at(pos).await?;
         if kinds.contains(&open.window_type) {
             return Ok(());

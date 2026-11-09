@@ -37,6 +37,11 @@ impl Bot {
         back.map(|()| done)
     }
 
+    /// The offers of the open trade screen, empty when none is open: the read side of [`Bot::trade`].
+    pub fn trade_offers(&self) -> &[TradeOffer] {
+        self.state.stations.trade.as_ref().map_or(&[], |window| window.offers.as_slice())
+    }
+
     /// The trades; `sources` collects `(payment slot, inventory slot)` for every stack paid in.
     async fn trade_open(&mut self, offer: usize, times: u32, sources: &mut Vec<(SlotRef, SlotRef)>) -> Result<u32, ActionError> {
         let mut done = 0;
@@ -121,13 +126,13 @@ impl Bot {
 }
 
 fn chosen(state: &GameState, offer: usize) -> Result<&TradeOffer, ActionError> {
-    let window = state.stations.trade.as_ref().ok_or_else(|| ActionError::NotPossible("no trade screen is open".into()))?;
-    let chosen = window.offers.get(offer).ok_or_else(|| ActionError::NotPossible(format!("the trader has {} offers", window.offers.len())))?;
+    let window = state.stations.trade.as_ref().ok_or_else(|| ActionError::NotPossible("no_villager: no trade screen is open".into()))?;
+    let chosen = window.offers.get(offer).ok_or_else(|| ActionError::NotPossible(format!("no_offers: the trader has {} offers", window.offers.len())))?;
     if chosen.is_disabled() {
-        return Err(ActionError::NotPossible(format!("offer {offer} is sold out")));
+        return Err(ActionError::NotPossible(format!("trade_failed: offer {offer} is sold out")));
     }
     if chosen.tier > window.tier {
-        return Err(ActionError::NotPossible(format!("offer {offer} needs trader level {}", chosen.tier)));
+        return Err(ActionError::NotPossible(format!("trade_failed: offer {offer} needs trader level {}", chosen.tier)));
     }
     Ok(chosen)
 }
@@ -150,7 +155,7 @@ pub(crate) fn fill_ops(state: &GameState, offer: usize) -> Result<Vec<Op>, Actio
             have += n;
         }
         if have < item.count {
-            return Err(ActionError::NotPossible(format!("not enough {} to pay", item.name)));
+            return Err(ActionError::NotPossible(format!("missing_offer_cost: not enough {} to pay", item.name)));
         }
     }
     Ok(ops)
@@ -207,4 +212,61 @@ fn return_slot(state: &GameState, slot: SlotRef, left: &ItemStack, sources: &[(S
 /// bottle is potion 0, an awkward potion would not pay).
 fn pays(item: &TradeItem, name: &str, metadata: u32) -> bool {
     name == item.name && (item.metadata == i16::MAX || metadata == item.metadata as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{TradeItem, TradeWindow};
+
+    fn offer(uses: i32, max_uses: i32, tier: i32) -> TradeOffer {
+        TradeOffer {
+            buy_a: TradeItem { name: "minecraft:emerald".into(), count: 1, metadata: i16::MAX },
+            buy_b: None,
+            sell: TradeItem { name: "minecraft:bread".into(), count: 4, metadata: i16::MAX },
+            uses,
+            max_uses,
+            tier,
+            recipe_network_id: 3,
+        }
+    }
+
+    fn open(offers: Vec<TradeOffer>, tier: i32) -> GameState {
+        let mut state = GameState::default();
+        state.stations.trade = Some(TradeWindow {
+            window_id: 1,
+            trader: 77,
+            ids: [77, 78],
+            display_name: "Villager".into(),
+            tier,
+            offers,
+        });
+        state
+    }
+
+    #[test]
+    fn an_offer_is_chosen_by_index_and_checked_for_stock_and_level() {
+        let mut state = GameState::default();
+        // Nothing open: the caller needs to know it has to walk up to a villager first.
+        assert!(matches!(chosen(&state, 0), Err(ActionError::NotPossible(m)) if m.starts_with("no_villager")));
+        state = open(vec![offer(0, 12, 0), offer(12, 12, 0), offer(0, 12, 2)], 1);
+        assert_eq!(chosen(&state, 0).expect("fresh offer").recipe_network_id, 3);
+        assert!(matches!(chosen(&state, 1), Err(ActionError::NotPossible(m)) if m.starts_with("trade_failed")), "sold out");
+        assert!(matches!(chosen(&state, 2), Err(ActionError::NotPossible(m)) if m.starts_with("trade_failed")), "tier 2, trader at 1");
+        assert!(matches!(chosen(&state, 9), Err(ActionError::NotPossible(m)) if m.starts_with("no_offers")));
+        // Zero max uses is BDS's "sold out" too.
+        let state = open(vec![offer(0, 0, 0)], 0);
+        assert!(chosen(&state, 0).is_err());
+    }
+
+    #[test]
+    fn a_payment_matches_by_identifier_and_metadata() {
+        let any = TradeItem { name: "minecraft:emerald".into(), count: 1, metadata: i16::MAX };
+        assert!(pays(&any, "minecraft:emerald", 0), "i16::MAX means any metadata");
+        assert!(pays(&any, "minecraft:emerald", 7));
+        assert!(!pays(&any, "minecraft:diamond", 0));
+        let exact = TradeItem { name: "minecraft:book".into(), count: 1, metadata: 3 };
+        assert!(pays(&exact, "minecraft:book", 3));
+        assert!(!pays(&exact, "minecraft:book", 0), "a specific metadata must match");
+    }
 }

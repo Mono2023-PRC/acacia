@@ -1,7 +1,7 @@
 //! Controllers: one per macro move (the leap's is in `leap`, the shortcut's in `shortcut`). The planner runs
 //! it in rollouts and the follower runs the same one live (`follow_macro`), so what was planned is what runs.
 
-use acacia_physics::BlockPos;
+use acacia_physics::{BlockPos, WorldView};
 
 use super::profile::Aim;
 use super::rollout::Body;
@@ -21,7 +21,7 @@ pub enum Phase {
 
 pub trait Controller {
     /// Sets `c` for the tick after body `b`. `peek` simulates that tick with other controls, committing nothing.
-    fn step(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, c: &mut Controls) -> Phase;
+    fn step<W: WorldView + ?Sized>(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, w: &W, c: &mut Controls) -> Phase;
 }
 
 pub(crate) fn centre(p: BlockPos) -> [f32; 2] {
@@ -54,7 +54,7 @@ impl RunCtl {
 }
 
 impl Controller for RunCtl {
-    fn step(&mut self, b: &Body, _: &mut dyn FnMut(&Controls) -> Body, c: &mut Controls) -> Phase {
+    fn step<W: WorldView + ?Sized>(&mut self, b: &Body, _: &mut dyn FnMut(&Controls) -> Body, _: &W, c: &mut Controls) -> Phase {
         if standing_on(b, self.target, self.feet) {
             return Phase::Done;
         }

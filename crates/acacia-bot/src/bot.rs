@@ -64,10 +64,26 @@ pub struct Bot {
     pub(crate) ride: Ride,
     pub(crate) bed: Bed,
     pub(crate) request_ids: RequestIds,
+    /// How the last [`Bot::equip_reporting`] went, until a caller collects it: the failing shapes
+    /// too, which a bare [`ActionError`] can only describe in prose.
+    ///
+    /// One slot, drained on read — so it answers "*this* operation's report?" only if the caller
+    /// drains it before the operation it wants a report for. [`Bot::equip_reporting`] empties it as
+    /// it starts for that reason; a caller that reads at other times must call
+    /// [`Bot::take_equip_report`] first, or it may be reading the previous equip's report.
+    pub(crate) last_equip_report: Option<crate::survival::EquipReport>,
     pub(crate) reflexes: Reflexes,
     pub(crate) mining: Option<crate::interact::Mining>,
     /// A dimension change in progress.
     travel: Option<dimension::Travel>,
+    /// The counts of the last fight, kept even when it ended in an error: the tool layer reports them
+    /// instead of scraping the message (combat/mod.rs).
+    pub(crate) last_fight: Option<crate::combat::FightReport>,
+    /// What the last search did, refused **or not** (t117, widened in t150): the tool layer reads it through
+    /// [`Bot::last_plan_stats`] / [`Bot::take_plan_stats`] instead of parsing the message. Shared with the pilot,
+    /// which is the only thing that knows. The slot is per operation — [`Bot::goto_with`] clears it on entry — so
+    /// `None` means "no search has run since this walk started", never "not searched".
+    pub(crate) plan_stats: std::sync::Arc<std::sync::Mutex<Option<crate::pathfind::PlanStats>>>,
     /// Physics bots: the simulation has started once, and the spawn packets went out with it.
     spawned: bool,
     strict: bool,
@@ -76,6 +92,8 @@ pub struct Bot {
     closed: Option<DisconnectReason>,
     pub(crate) governor: Governor,
     pub(crate) act_timing: crate::act_timing::ActTiming,
+    /// Ticks in a row the predicted body has been more than a block from the server's position (desync.rs).
+    pub(crate) desync_ticks: u32,
     pub(crate) in_flight: crate::interact::pipeline::Pipeline<crate::interact::pipeline::StackUndo>,
     lag: Option<LagLine>,
     pub(crate) cancel: crate::cancel::CancelState,
@@ -139,6 +157,7 @@ impl Bot {
             ride: Ride::default(),
             bed: Bed::default(),
             request_ids: RequestIds::default(),
+            last_equip_report: None,
             reflexes: Reflexes::default(),
             mining: None,
             travel: None,
@@ -148,6 +167,9 @@ impl Bot {
             closed: None,
             governor: Governor::default(),
             act_timing: Default::default(),
+            desync_ticks: 0,
+            last_fight: None,
+            plan_stats: Default::default(),
             in_flight: Default::default(),
             lag: config.lag.map(LagLine::new),
             cancel: Default::default(),
@@ -188,8 +210,35 @@ impl Bot {
         self.movement.as_mut().map(|m| &mut m.controls)
     }
 
+    /// How the last [`Bot::equip_reporting`] (or [`Bot::equip`]) went, cleared as it is read.
+    ///
+    /// A failed equip still leaves its report here: `ActionError` can only say what went wrong in
+    /// prose, while a caller that answers refusals programmatically needs the status code and which
+    /// request shapes were already tried.
+    ///
+    /// The slot is single and drained on read: drain it *before* an equip whose report you want, or
+    /// you may collect the previous one's (an equip also empties it as it starts, which covers the
+    /// call-then-read order but not reads that happen between unrelated operations).
+    pub fn take_equip_report(&mut self) -> Option<crate::survival::EquipReport> {
+        self.last_equip_report.take()
+    }
+
     pub fn movement(&self) -> Option<&Movement> {
         self.movement.as_ref()
+    }
+
+    /// The last jump the body made, whoever pressed the key: the pathfinder's `steer`/`maneuver`/`shortcut`/`leap`,
+    /// the bot's own [`Self::hop_toward`], or a replay (t112).
+    ///
+    /// `move_to` used to report jumps only from the heal path, so a walk that climbed a step by the pathfinder's own
+    /// `Ascend` came back with no record at all, although the server saw `jump=1` and the feet rose a block.
+    pub fn last_jump(&self) -> Option<&crate::movement::Jump> {
+        self.movement.as_ref().and_then(|m| m.last_jump())
+    }
+
+    /// Jumps finished so far; compare it before and after an action to know whether [`Self::last_jump`] is fresh.
+    pub fn jump_count(&self) -> Option<u64> {
+        self.movement.as_ref().map(|m| m.jump_count())
     }
 
     /// Closes the connection and waits (up to 2 s) for the disconnect to be sent, so the server

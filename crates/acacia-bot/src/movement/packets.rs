@@ -21,6 +21,12 @@ const EFFECT_LEVITATION: i32 = 24;
 const EFFECT_SLOW_FALLING: i32 = 27;
 const EFFECT_WEAVING: i32 = 33;
 
+/// Whether a correction is for a tick this client has already simulated (or for "now", `tick` 0): those must be
+/// applied at once, because a schedule entry for a past tick never fires.
+fn correction_lands_now(server_tick: u64, our_tick: u64) -> bool {
+    server_tick == 0 || server_tick <= our_tick
+}
+
 impl Movement {
     pub const PACKETS: &'static [u32] = &[
         MovePlayer::ID,
@@ -77,6 +83,7 @@ impl Movement {
                     // BDS holds the player at the target through tick T+1 and simulates on from T+2
                     // (docs/DESIGN.md "Movement vs the servers"); Geyser stamps no tick, and Boar
                     // holds the player still on the acknowledging tick.
+                    self.last_confirmed = Some(self.tick);
                     if m.tick == 0 || m.tick >= self.tick {
                         st.queue_teleport(feet);
                         // Boar makes a teleported player airborne until it lands again; BDS keeps on_ground.
@@ -123,8 +130,13 @@ impl Movement {
                 if ours.is_none_or(|p| p.iter().zip(feet).map(|(a, b)| (a - b) * (a - b)).sum::<f32>() > SETBACK * SETBACK) {
                     self.last_setback = Some(self.tick);
                 }
-                if c.tick == 0 {
+                let now = if self.recorded_corrections { c.tick == 0 } else { correction_lands_now(c.tick, self.tick) };
+                if now {
+                    // Our tick follows the wall clock while the server counts its own world ticks (t40), so its
+                    // numbers are often behind ours: a correction scheduled for a tick that already happened would
+                    // wait forever, and the client stayed permanently ahead (t55: 423 corrections, still 2 blocks).
                     st.apply_correction(feet, delta, on_ground);
+                    self.late_corrections += 1;
                 } else {
                     self.history.schedule(c.tick, Correction { feet, delta, on_ground, teleport: false });
                 }
@@ -184,4 +196,19 @@ impl Movement {
 
 fn feet(eye: &acacia_client::proto::types::Vec3f) -> Vec3 {
     [eye.x, eye.y - EYE_HEIGHT, eye.z]
+}
+
+#[cfg(test)]
+mod correction_time_tests {
+    use super::correction_lands_now;
+
+    #[test]
+    fn a_correction_for_a_past_tick_applies_now() {
+        // t55: the server's tick numbering runs behind the wall-clock tick we report, so nearly every correction is
+        // for a tick we already simulated; scheduled, it never fired and the client stayed two blocks ahead.
+        assert!(correction_lands_now(17, 900));
+        assert!(correction_lands_now(0, 5), "tick 0 means \"apply now\" whatever our tick is");
+        assert!(!correction_lands_now(905, 900), "a correction for a future tick still waits for it");
+        assert!(!correction_lands_now(901, 900));
+    }
 }

@@ -41,6 +41,7 @@ mod vanilla_tests;
 pub use break_time::{break_ticks, BreakConditions};
 pub use direct::is_interactive;
 pub(crate) use direct::Mining;
+pub use breaking::{DigApproach, DigFailure, DigOpts, DigReport, DigStop};
 pub use geometry::{facing_face, Face, BLOCK_REACH, ENTITY_REACH};
 pub(crate) use geometry::{block_distance, ray_box};
 pub use wire::{to_wire, SwingSource};
@@ -73,7 +74,8 @@ impl Bot {
         let preferred: Vec<_> = points.iter().copied().filter(|&(f, _)| Some(f) == prefer).collect();
         let pool = if preferred.is_empty() { points } else { preferred };
         if pool.is_empty() {
-            return Err(ActionError::NotVisible(format!("block {pos:?} is behind other blocks")));
+            let occluder = self.sight().and_then(|s| s.occluder(eye, pos));
+            return Err(ActionError::NotVisible(behind_message(pos, occluder)));
         }
         Ok(pool[self.human.pick(pool.len())])
     }
@@ -158,5 +160,34 @@ impl Bot {
             self.next_tick(|_, _| false).await?;
         }
         Ok(())
+    }
+}
+
+/// What the model reads when a block cannot be reached by the eye: naming the block in the way is what turns
+/// "behind other blocks" (guess, retry the same cell) into a next step ("dig that one first"). Without a known
+/// occluder the wording stays vague rather than inventing a cell (t101).
+pub(crate) fn behind_message(pos: BlockPos, occluder: Option<BlockPos>) -> String {
+    match occluder {
+        Some(o) if o != pos => format!("block {pos:?} is behind {o:?} — dig that one first"),
+        _ => format!("block {pos:?} is behind other blocks"),
+    }
+}
+
+#[cfg(test)]
+mod behind_tests {
+    use super::behind_message;
+
+    #[test]
+    fn a_hidden_block_says_what_hides_it() {
+        // t101, live run 20261109-020753: `dig [150026, 2, 149828]` (a diamond ore the bot had found) answered
+        // `not_visible` three times in a row (s69/s71/s73), and the model could only guess what was in the way.
+        let target = [150026, 2, 149828];
+        assert_eq!(
+            behind_message(target, Some([150026, 3, 149828])),
+            "block [150026, 2, 149828] is behind [150026, 3, 149828] — dig that one first"
+        );
+        // No occluder known: the old wording, never an invented cell.
+        assert_eq!(behind_message(target, None), "block [150026, 2, 149828] is behind other blocks");
+        assert_eq!(behind_message(target, Some(target)), "block [150026, 2, 149828] is behind other blocks");
     }
 }

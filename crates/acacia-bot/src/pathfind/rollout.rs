@@ -16,11 +16,11 @@ pub struct Trace {
 }
 
 /// Runs `ctl` on `r` from controls `c` until it finishes, fails or `max` ticks pass.
-pub fn run(r: &mut Rollout, ctl: &mut impl Controller, mut c: Controls, max: u32, w: &(impl WorldView + ?Sized)) -> Trace {
+pub fn run<W: WorldView + ?Sized>(r: &mut Rollout, ctl: &mut impl Controller, mut c: Controls, max: u32, w: &W) -> Trace {
     let mut bodies = vec![Body::of(&r.st)];
     loop {
         let b = bodies[bodies.len() - 1];
-        let phase = ctl.step(&b, &mut |pc: &Controls| peek(r, pc, w), &mut c);
+        let phase = ctl.step(&b, &mut |pc: &Controls| peek(r, pc, w), w, &mut c);
         let ticks = bodies.len() as u32 - 1;
         if phase != Phase::Going || ticks >= max {
             return Trace { bodies, landed: phase == Phase::Done, ticks };

@@ -16,11 +16,12 @@ use std::time::Duration;
 use acacia_physics::{PlayerState, Vec3};
 use tokio::sync::oneshot::error::TryRecvError;
 
-use super::astar::{Path, SearchOpts, search_cached};
+use super::astar::{Path, SearchOpts};
 use super::cache::RolloutCache;
 use super::favour::Favour;
 use super::follow::{FollowStatus, Follower, Sense};
 use super::goal::Goal;
+use super::opts::PlanStats;
 use super::goto::{GotoOpts, NavStatus};
 use super::hazard::{Hazards, Senses, Striker};
 use super::job::{Answer, SearchJob, Spawn};
@@ -80,6 +81,9 @@ pub struct Pilot {
     watch: Watch,
     alarm: Alarm,
     senses: Senses,
+    /// Where a refusal is reported for the tool layer to read (`Bot::last_plan_stats`); `None` for pilots that are
+    /// not driving a bot (tests, plan-ahead helpers).
+    plan_sink: Option<Arc<std::sync::Mutex<Option<PlanStats>>>>,
     striker: Striker,
     field: Option<Arc<Hazards>>,
     perceived_at: Option<u64>,
@@ -97,7 +101,23 @@ impl Pilot {
         let (rng, guard) = (opts.seed.unwrap_or_else(seed), Guard::new(opts.give_up_ticks));
         let striker = Striker::new(opts.search.profile, rng.rotate_left(29));
         let (follower, pending, ahead, favour) = (None, None, Ahead::default(), None);
-        Self { goal, opts, follower, partial: false, pending, ahead, generation: 0, replans: 0, teleports: None, diverged: 0, diverged_in_air: false, divergences: 0, favour, guard, cache, rng, watch: Watch::default(), alarm: Alarm::default(), senses: Senses::new(rng.rotate_left(17)), striker, field: None, perceived_at: None, blocked_waits: 0 }
+        Self { goal, opts, follower, partial: false, pending, ahead, generation: 0, replans: 0, teleports: None, diverged: 0, diverged_in_air: false, divergences: 0, favour, guard, cache, rng, watch: Watch::default(), alarm: Alarm::default(), senses: Senses::new(rng.rotate_left(17)), striker, field: None, perceived_at: None, blocked_waits: 0, plan_sink: None }
+    }
+
+    /// Reports refusals to `sink` (the bot's slot), so a tool layer can read the numbers of the last failed search
+    /// without parsing its message (t117).
+    pub fn reporting(mut self, sink: Arc<std::sync::Mutex<Option<PlanStats>>>) -> Self {
+        self.plan_sink = Some(sink);
+        self
+    }
+
+    /// Writes (or clears) the report; a locked slot is not an error, just nobody listening.
+    fn report(&self, plan: Option<PlanStats>) {
+        if let Some(sink) = &self.plan_sink
+            && let Ok(mut slot) = sink.lock()
+        {
+            *slot = plan;
+        }
     }
 
     /// Something else had the controls for a while: drop the path (re-planned from here, favoured) and any
@@ -226,7 +246,7 @@ impl Pilot {
         self.guard.searched(live.on_ground);
         if inline {
             let quick_opts = SearchOpts { max_nodes: QUICK_NODES, budget: QUICK_BUDGET, max_rollout_ticks: QUICK_ROLLOUT_TICKS, ..opts.clone() };
-            let quick = search_cached(terrain, &live, &self.goal, &quick_opts, &self.cache);
+            let quick = super::astar::search_cached(terrain, &live, &self.goal, &quick_opts, &self.cache);
             // A plan whose macro budget ran out may have missed faster macro moves: search again in full. Moving, a
             // partial one beats stopping for the full search: plan-ahead extends it from its end.
             let moving = live.vel[0].hypot(live.vel[2]) > MOVING;
@@ -239,7 +259,9 @@ impl Pilot {
         Ok(())
     }
 
-    fn accept(&mut self, path: Path, pos: Vec3) -> Result<(), ActionError> {
+    /// Takes a search answer: drop the old path, follow the new one, or refuse with the numbers behind the refusal.
+    /// `pub(crate)` so tests can feed it a hand-built answer and check what it reports (t117).
+    pub(crate) fn accept(&mut self, path: Path, pos: Vec3) -> Result<(), ActionError> {
         tracing::debug!(nodes = path.nodes.len(), complete = path.complete, unreachable = path.unreachable, cost = path.cost, visited = path.visited, "path found");
         // A solid entity may be what closes the way: wait for it to move before giving up (design decision 5).
         if path.unreachable && self.field.as_ref().is_some_and(|h| !h.solids.is_empty()) && self.blocked_waits < MAX_BLOCKED_WAITS {
@@ -249,8 +271,14 @@ impl Pilot {
             return Ok(());
         }
         if path.unreachable {
-            return Err(ActionError::NotPossible(format!("cannot reach {:?} from {pos:?}: every reachable cell searched", self.goal)));
+            // Both channels carry the same numbers: the message for a human reading a trace, this slot for the tool
+            // layer that has to turn "no path" into an instruction.
+            self.report(Some(path.plan));
+            return Err(ActionError::NotPossible(unreachable_message(&self.goal, pos, path.plan)));
         }
+        // Reached: the slot now describes *this* search — what it cost and how much it had to look (t150). A tool layer
+        // that can only read refusals could not tell a cheap walk from an expensive one.
+        self.report(Some(path.plan));
         (self.favour, self.diverged_in_air) = (None, false);
         if path.nodes.is_empty() && !path.complete {
             // No way on from here (yet): wait before searching again rather than re-search every tick.
@@ -292,4 +320,80 @@ impl Pilot {
 /// comes from that work).
 fn still_valid<B: Blocks>(terrain: &Terrain<B>, f: &Follower) -> bool {
     f.standing_ahead().iter().take(LOOKAHEAD).all(|n| terrain.spot(n.pos).is_some_and(|s| (s.feet - n.feet).abs() < 0.01))
+}
+
+/// Why a search gave up, in words a caller can act on (t117).
+///
+/// The old text claimed "every reachable cell searched" for every refusal -- including a search that stopped 40
+/// blocks from the goal, where the honest reading is "we never got there". The caller's next move differs: a goal
+/// walled off from the reachable area asks for another goal, a goal never approached asks for a bigger budget or a
+/// trip in stages. So the claim is made only when it is true, and the numbers ride along as JSON for a tool layer.
+pub(crate) fn unreachable_message(goal: &Goal, pos: Vec3, plan: PlanStats) -> String {
+    let head = format!("cannot reach {goal:?} from {pos:?}");
+    let text = if plan.budget_exhausted {
+        format!(
+            "{head}: the search ran out of budget after {} nodes (max {}), so it proved nothing about the goal ({})",
+            plan.nodes_expanded,
+            plan.max_nodes,
+            plan.describe()
+        )
+    } else if plan.target_region_reached {
+        format!("{head}: every reachable cell searched, none of them on the goal ({})", plan.describe())
+    } else {
+        // Searched out, but never within reach of the goal: the two areas are not connected, which is not the same as
+        // "the goal is walled in" and not the same as "the search gave up early" either.
+        format!("{head}: every reachable cell searched, but the closest was {}", short_phrase(plan))
+    };
+    format!("{text} [plan {}]", plan.to_json())
+}
+
+/// "2.3 blocks short of it" / "never within the goal's area".
+fn short_phrase(plan: PlanStats) -> String {
+    match plan.closest_short {
+        Some(short) => format!("{short:.1} blocks short of it ({} nodes)", plan.nodes_expanded),
+        None => format!("never inside the goal's area ({} nodes)", plan.nodes_expanded),
+    }
+}
+
+/// t150: the slot is not a failure channel any more — a walk that arrives reports the search behind it.
+#[cfg(test)]
+mod t150_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// A finished path with nothing to walk (the numbers are what this test is about).
+    fn answer(cost: f32) -> Path {
+        Path {
+            nodes: Vec::new(),
+            complete: true,
+            unreachable: false,
+            cost,
+            visited: 3,
+            macro_stats: Default::default(),
+            plan: PlanStats { nodes_expanded: 3, max_nodes: 200_000, cost, ..PlanStats::default() },
+        }
+    }
+
+    #[test]
+    fn a_walk_that_arrives_reports_the_search_that_planned_it() {
+        let slot = Arc::new(Mutex::new(None));
+        let mut pilot = Pilot::new(Goal::Block([4, 1, 0]), GotoOpts::default()).reporting(slot.clone());
+        assert!(slot.lock().unwrap().is_none(), "a fresh pilot has nothing to report");
+
+        assert!(pilot.accept(answer(12.5), [0.5, 1.0, 0.5].into()).is_ok());
+        let reported = slot.lock().unwrap().expect("arriving reports the search, not nothing");
+        assert_eq!(reported.cost, 12.5, "the price a caller compares between plans");
+        assert_eq!(reported.nodes_expanded, 3, "and how much looking it took");
+    }
+
+    #[test]
+    fn arriving_twice_reports_the_second_search() {
+        let slot = Arc::new(Mutex::new(None));
+        let mut pilot = Pilot::new(Goal::Block([4, 1, 0]), GotoOpts::default()).reporting(slot.clone());
+        assert!(pilot.accept(answer(12.5), [0.5, 1.0, 0.5].into()).is_ok());
+        assert!(pilot.accept(answer(3.0), [1.5, 1.0, 0.5].into()).is_ok());
+        let reported = slot.lock().unwrap().expect("still reporting");
+        assert_eq!(reported.cost, 3.0, "the slot describes the newest search, not the first");
+    }
 }

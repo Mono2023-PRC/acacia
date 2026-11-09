@@ -31,7 +31,7 @@ struct Toy {
     server: Grid,
     client: Grid,
     to_server: VecDeque<(u64, BlockPos, String)>,
-    to_client: VecDeque<(u64, BlockPos, String, String)>,
+    to_client: VecDeque<(u64, BlockPos, u32, String, String)>,
     rng: u64,
     actions: u32,
     refused: u32,
@@ -63,12 +63,12 @@ impl Toy {
             let late = if self.chance(0.2) { 4 } else { 0 };
             self.late += u32::from(late > 0);
             let at = (now + DOWN + late).max(self.to_client.back().map_or(0, |(t, ..)| *t));
-            self.to_client.push_back((at, pos, n, p));
+            self.to_client.push_back((at, pos, 0, n, p));
         }
         while self.to_client.front().is_some_and(|(t, ..)| *t <= now) {
-            let (_, pos, name, props) = self.to_client.pop_front().expect("due");
+            let (_, pos, id, name, props) = self.to_client.pop_front().expect("due");
             self.client.set_state(pos, name.trim_start_matches("minecraft:"), &props);
-            pipe.echo(pos);
+            pipe.echo(pos, id);
         }
     }
 }

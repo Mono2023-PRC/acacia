@@ -108,6 +108,14 @@ pub(crate) fn distance_to_box(p: Vec3, min: Vec3, max: Vec3) -> f32 {
 }
 
 /// Distance from `eye` to the block's centre, what [`BLOCK_REACH`] limits.
+/// Distance from `eye` to the nearest point of the block's cell box: what a block is actually touched at
+/// (a cell beside the feet is 0.5 away, not the 2.1 its centre reports).
+pub(crate) fn block_box_distance(eye: Vec3, pos: BlockPos) -> f32 {
+    let m = block_min(pos);
+    let d: [f32; 3] = std::array::from_fn(|i| (m[i] - eye[i]).max(0.0).max(eye[i] - (m[i] + 1.0)));
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
 pub(crate) fn block_distance(eye: Vec3, pos: BlockPos) -> f32 {
     let c = block_center(pos);
     (0..3).map(|i| (c[i] - eye[i]).powi(2)).sum::<f32>().sqrt()
@@ -178,4 +186,21 @@ pub(crate) fn entity_aims(eye: Vec3, entity: &Entity) -> impl Iterator<Item = (V
         let t = ray_box(eye, dir, min, max).map_or(1.0, |(t, _)| t);
         (aim, [eye[0] + dir[0] * t, eye[1] + dir[1] * t, eye[2] + dir[2] * t])
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cell_beside_the_eye_is_its_box_distance_not_its_centre() {
+        let eye = [0.5, 1.62, 0.5];
+        // The cell under the feet: 1.12 to its centre, 0.62 to its top face — the reach rule may use either.
+        assert!((block_distance(eye, [0, 0, 0]) - 1.12).abs() < 0.01);
+        assert!((block_box_distance(eye, [0, 0, 0]) - 0.62).abs() < 0.01);
+        // A cell the eye is inside has no distance at all.
+        assert_eq!(block_box_distance([0.5, 0.5, 0.5], [0, 0, 0]), 0.0);
+        // Two across and one down: 1.5 to the near face and 0.62 down, 1.62 as the crow flies.
+        assert!((block_box_distance(eye, [2, 0, 0]) - 1.62).abs() < 0.01);
+    }
 }

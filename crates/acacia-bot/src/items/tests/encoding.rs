@@ -45,7 +45,8 @@ fn slot_names_per_screen() {
     assert_eq!(SlotRef::Main(3).slot_info(&own, false, SlotRef::Main(3).stack(&state).unwrap()), info(T::Hotbar, 3, 7));
     assert_eq!(SlotRef::Main(3).slot_info(&own, true, SlotRef::Main(3).stack(&state).unwrap()), info(T::HotbarAndInventory, 3, 7));
     assert_eq!(SlotRef::Main(30).slot_info(&own, false, SlotRef::Main(30).stack(&state).unwrap()), info(T::Inventory, 30, 9));
-    assert_eq!(SlotRef::Offhand.slot_info(&own, false, &state.inventory.offhand), info(T::Offhand, 1, 11));
+    // t131: the offhand is one slot of its own container, so index 0 (index 1 is window numbering).
+    assert_eq!(SlotRef::Offhand.slot_info(&own, false, &state.inventory.offhand), info(T::Offhand, 0, 11));
     assert_eq!(SlotRef::Armor(1).slot_info(&own, false, &state.inventory.armor[1]), info(T::Armor, 1, 12));
     assert_eq!(SlotRef::Cursor.wire(&own, false), (T::Cursor, 0));
 
@@ -162,7 +163,7 @@ fn request_ids_count_down_from_minus_three_per_session() {
     let mut ids = RequestIds::default();
     assert_eq!([ids.next(), ids.next(), ids.next()], [-3, -5, -7]);
     assert_eq!(RequestIds::default().next(), -3, "every session starts afresh");
-    let mut ids = RequestIds { next: i32::MIN + 1 };
+    let mut ids = RequestIds { next: i32::MIN + 1, last_rejection: None, last_request: Vec::new() };
     assert_eq!([ids.next(), ids.next()], [i32::MIN + 1, -3]);
 }
 

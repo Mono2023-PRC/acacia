@@ -12,6 +12,7 @@ use super::work::Step;
 use super::PathNode;
 use crate::interact::Face;
 use crate::movement::Controls;
+use crate::movement::jump_room_blocked_by_state;
 use crate::survival::Destination;
 use crate::{ActionError, Bot};
 
@@ -68,8 +69,11 @@ async fn place(bot: &mut Bot, kind: MoveKind, against: BlockPos, face: Face, sca
     let slot = bot.scaffold_slot(scaffold).ok_or_else(|| ActionError::NotPossible("no scaffold blocks left".into()))?;
     bot.equip(slot, Destination::Hand).await?;
     if kind == MoveKind::Pillar {
+        // t110: the ceiling above the feet decides whether the pillar jump can do anything; it has to be asked
+        // before the closure (which only sees the sense and the controls).
+        let room = jump_room_blocked_by_state(target, |pos| bot.block_at(pos).is_some_and(|(_, s)| !s.boxes.is_empty()));
         bot.look_at([against[0] as f32 + 0.5, (against[1] + 1) as f32, against[2] as f32 + 0.5]).await?;
-        if !maneuver_until(bot, RISE_TICKS, |s, c| maneuver::rise(s, target, c)).await? {
+        if !maneuver_until(bot, RISE_TICKS, |s, c| maneuver::rise(s, target, room, c)).await? {
             return Err(ActionError::NotPossible(format!("could not jump above {target:?}")));
         }
     } else {

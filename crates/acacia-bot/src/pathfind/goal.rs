@@ -57,6 +57,24 @@ impl Goal {
         }
     }
 
+    /// How far `p` is from the goal's neighbourhood, in blocks: `0.0` once inside it (t117).
+    ///
+    /// Not [`Goal::success`], which is a single cell (or a radius the body must stand inside). This is the area a
+    /// search has to have *covered* before "no path" means anything: a search that stopped while still 30 blocks away
+    /// has not learned that the goal is unreachable, only that it ran out of nodes, and the two need different
+    /// answers from whoever asked. `None` for goals with no neighbourhood (`XZ`, `Y`, `Away`).
+    pub fn region_distance(&self, p: BlockPos) -> Option<f32> {
+        match self {
+            // The cell and the neighbours a body could stand on to be "at" it.
+            Goal::Block(g) => Some((dist_sq(p, *g).sqrt() - 1.0).max(0.0)),
+            // A radius goal that has been reached would have ended the search, so count its own radius as inside:
+            // what is being asked is whether the search ever got to where the goal starts to matter.
+            Goal::Near(g, r) => Some((dist_sq(p, *g).sqrt() - r).max(0.0)),
+            Goal::Or(goals) => goals.iter().filter_map(|g| g.region_distance(p)).reduce(f32::min),
+            _ => None,
+        }
+    }
+
     /// Estimated ticks to the goal for classic moves.
     pub fn heuristic(&self, p: BlockPos) -> f32 {
         self.estimate(p, Speed::CLASSIC, false)
@@ -97,5 +115,26 @@ fn y(dy: f32) -> f32 {
         (costs::jump_one_block().max(WALK) + JUMP_PENALTY - SPRINT) * dy
     } else {
         costs::fall_ticks(2.0) / 2.0 * -dy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_near_goal_accepts_standing_beside_an_occupied_target() {
+        // t46: `move_to [x, y, z+3]` on the same level was refused with "no path" because the goal box only fit
+        // the (occupied) target cell. A `Near` box must accept the standing spots around it...
+        let goal = Goal::Near([150039, 35, 149855], 1.5);
+        assert!(goal.success([150039, 35, 149854]));
+        assert!(goal.success([150039, 35, 149856]));
+        assert!(!goal.success([150039, 35, 149851]), "but not a cell four blocks away");
+        // ...and its estimate stays finite for every one of them (the search can aim at them).
+        for p in [[150039, 35, 149854], [150039, 35, 149856], [150040, 35, 149855]] {
+            assert!(goal.estimate(p, Speed::CLASSIC, false).is_finite(), "{p:?}");
+        }
+        // A wider box is what the tool falls back to when the tight one has no free spot.
+        assert!(Goal::Near([150039, 35, 149855], 3.0).success([150039, 35, 149852]));
     }
 }

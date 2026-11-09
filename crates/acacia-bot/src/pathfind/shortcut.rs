@@ -15,6 +15,7 @@ use super::profile::Aim;
 use super::rollout::{Body, Spend};
 use super::retry::live_hazard;
 use super::solve::Solver;
+use crate::movement::{feet_cell, hop_room_blocked_by};
 use crate::movement::{Controls, Rollout};
 
 /// Nodes ahead tried, farthest first.
@@ -76,7 +77,7 @@ impl ShortcutCtl {
 }
 
 impl Controller for ShortcutCtl {
-    fn step(&mut self, b: &Body, _: &mut dyn FnMut(&Controls) -> Body, c: &mut Controls) -> Phase {
+    fn step<W: WorldView + ?Sized>(&mut self, b: &Body, _: &mut dyn FnMut(&Controls) -> Body, w: &W, c: &mut Controls) -> Phase {
         let origin = *self.origin.get_or_insert([b.pos[0], b.pos[2]]);
         if self.arrived(b, origin) {
             return Phase::Done;
@@ -95,7 +96,12 @@ impl Controller for ShortcutCtl {
         };
         c.yaw = self.aim.turn(b.yaw, heading);
         let dist = (b.pos[0] - to[0]).hypot(b.pos[2] - to[1]);
-        c.jump = self.jump && b.on_ground && dist > self.stop_jump;
+        // t110: only press when there is room to lift and to land -- the same rule as the leap and the follower.
+        let landing = [self.target[0], self.feet.floor() as i32, self.target[2]];
+        c.jump = self.jump
+            && b.on_ground
+            && dist > self.stop_jump
+            && hop_room_blocked_by(w, feet_cell(b.pos), Some(landing)).is_none();
         // Braking for a stop-only target: let go once coasting on the ground covers what is left.
         if self.stop && b.on_ground && dist < b.h_speed() * GROUND_COAST {
             (c.forward, c.sprint, c.jump) = (0.0, false, false);

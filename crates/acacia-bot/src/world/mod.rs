@@ -63,6 +63,8 @@ pub struct WorldTracker {
     /// Chunk data that did not decode, for the bot to drain (strict mode reports it).
     pub(crate) rejected: Vec<Violation>,
     near: Option<Near>,
+    /// The dimension the current view belongs to (for the tracker's own requests).
+    dimension: i32,
 }
 
 impl WorldTracker {
@@ -79,7 +81,22 @@ impl WorldTracker {
     ];
 
     pub fn new(server: String, shared: SharedWorlds) -> Self {
-        Self { server, shared, registry: None, ids: BlockIds::Runtime, view: None, blobs: Blobs::default(), outgoing: Vec::new(), rejected: Vec::new(), near: None }
+        Self { server, shared, registry: None, ids: BlockIds::Runtime, view: None, blobs: Blobs::default(), outgoing: Vec::new(), rejected: Vec::new(), near: None, dimension: 0 }
+    }
+
+    /// Asks the server for one section again: the view is stale there (an update the tracker could not
+    /// apply, or a section that arrived wrong). Asked once per position by [`crate::interact::confirm`] when
+    /// an echo shows a block the view does not show.
+    pub fn request_section(&mut self, x: i32, y: i32, z: i32) {
+        if self.view.is_none() {
+            return;
+        }
+        let request = SubchunkRequest {
+            dimension: self.dimension,
+            requests: vec![Vec3i8 { x: 0, y: (y >> 4) as i8, z: 0 }],
+            origin: Vec3li { x: x >> 4, y: 0, z: z >> 4 },
+        };
+        self.outgoing.push(request);
     }
 
     /// Idle bots: requests nothing (crate::subchunks does, like vanilla) and decodes only the columns
@@ -205,6 +222,7 @@ impl WorldTracker {
 
     fn enter_dimension(&mut self, dimension: i32) {
         let Some(registry) = &self.registry else { return };
+        self.dimension = dimension;
         let (registry, ids) = (registry.clone(), self.ids);
         let world = self.shared.get_or_create((self.server.clone(), dimension), || World::new(registry, dimension, ids));
         self.view = Some(ChunkView::new(world));

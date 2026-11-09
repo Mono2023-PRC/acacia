@@ -27,6 +27,9 @@ impl Bot {
     /// Vanilla clicks an entity only after reporting the crosshair on it (`Interact` MouseOverEntity
     /// with the hit point, 75-1277 ms before in the capture).
     async fn use_on_entity(&mut self, runtime_id: u64, attack: bool) -> Result<(), ActionError> {
+        // The aim comes from the body the client simulates: if the server has it somewhere else the click is
+        // dropped there (t27), so refuse instead of sending packets that cannot land.
+        self.check_position_synced()?;
         let (aim, _) = self.entity_in_reach(runtime_id)?;
         self.look_at(aim).await?;
         if self.reflexes.hovered != Some(runtime_id) {
@@ -46,6 +49,11 @@ impl Bot {
     /// crosshair on it if it was elsewhere, swings and sends `UseItemOnEntity`.
     pub fn click_entity_aimed(&mut self, runtime_id: u64, attack: bool) -> Result<(), ActionError> {
         let (_, hit) = self.entity_in_reach(runtime_id)?;
+        if attack {
+            // One line per swing, so a real-server trace can tell a stale *target* position from a wrong click
+            // (t27 saw the click 8 blocks above the bot, and the relay's position correction turned out fine).
+            self.log_swing(runtime_id, hit);
+        }
         if self.reflexes.hovered != Some(runtime_id) {
             self.client.send(&wire::mouse_over(runtime_id, hit));
             self.reflexes.hovered = Some(runtime_id);
@@ -60,6 +68,21 @@ impl Bot {
             self.later(ENTITY_SWING, Reflex::Swing(SwingSource::Interact));
         }
         Ok(())
+    }
+
+    /// The one line per swing the t30 diagnosis needs: where the bot thinks it is, where the target's tracked
+    /// body is, the click sent, and the distance the reach check used.
+    fn log_swing(&self, runtime_id: u64, hit: [f32; 3]) {
+        let Some(entity) = self.state.entities.get(runtime_id) else { return };
+        let feet = entity.feet();
+        let eye = self.eye_position();
+        let distance = super::geometry::entity_distance(eye, entity);
+        let bot = self.feet_block();
+        tracing::info!(
+            target: "acacia_bot::swing",
+            "[swing] target={runtime_id} bot={bot:?} bot_eye=[{:.2}, {:.2}, {:.2}] target_tracked=[{:.2}, {:.2}, {:.2}] click=[{:.2}, {:.2}, {:.2}] dist={distance:.2} reach_ok={}",
+            eye[0], eye[1], eye[2], feet.x, feet.y, feet.z, hit[0], hit[1], hit[2], distance <= super::geometry::ENTITY_REACH,
+        );
     }
 
     /// An aim point the eye sees on the entity, and where the ray towards it enters the hitbox, if it is

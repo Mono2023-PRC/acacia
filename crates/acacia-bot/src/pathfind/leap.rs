@@ -1,11 +1,12 @@
 //! The leap controller: sprint at a target cell, jump and land standing in it (or fall into its water).
 
-use acacia_physics::BlockPos;
+use acacia_physics::{BlockPos, WorldView};
 
 use super::control::{Controller, LAND_EPS, Phase, centre, standing_on, yaw_to};
 use super::profile::Aim;
 use super::rollout::Body;
 use crate::movement::Controls;
+use crate::movement::{feet_cell, hop_room_blocked_by};
 
 /// Ticks a leap may take, run-up included.
 pub(crate) const MAX_LEAP_TICKS: u16 = 40;
@@ -85,7 +86,7 @@ impl LeapCtl {
 }
 
 impl Controller for LeapCtl {
-    fn step(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, c: &mut Controls) -> Phase {
+    fn step<W: WorldView + ?Sized>(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, w: &W, c: &mut Controls) -> Phase {
         let origin = *self.origin.get_or_insert([b.pos[0], b.pos[2]]);
         if self.air > 0 && self.landed(b) {
             return Phase::Done;
@@ -117,7 +118,11 @@ impl Controller for LeapCtl {
         }
         (c.forward, c.sprint) = if coasting { (0.0, false) } else { (1.0, true) };
         if b.on_ground {
-            c.jump = match self.jump {
+            // t110: a press under a ceiling is a bump, not a leap -- ask the one ceiling rule (takeoff and landing)
+            // before pressing. A watery target has no head cell to speak of.
+            let landing = (!self.wet).then(|| [self.target[0], self.feet.floor() as i32, self.target[2]]);
+            let room = hop_room_blocked_by(w, feet_cell(b.pos), landing);
+            c.jump = room.is_none() && match self.jump {
                 JumpAt::Edge => !peek(c).on_ground,
                 JumpAt::Tick(k) => tick >= u16::from(k),
                 JumpAt::Along(x) => self.along(origin, b) >= x,

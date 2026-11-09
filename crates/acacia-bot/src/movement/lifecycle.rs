@@ -34,6 +34,9 @@ impl Movement {
         // The server's flying flag is adopted again on the first tick there.
         self.server_flying = None;
         self.prev_jump = false;
+        // A jump that was still in the air belongs to the dimension left behind (t112).
+        self.airborne = None;
+        self.hop_target = None;
         self.keys = Default::default();
     }
 

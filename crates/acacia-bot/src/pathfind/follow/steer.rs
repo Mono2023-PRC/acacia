@@ -1,9 +1,11 @@
 //! Classic steering: the controls that walk, jump and sprint towards the current node.
 
 use acacia_physics::constants::DEFAULT_GROUND_DRAG as GROUND_DRAG;
+use acacia_physics::constants::STEP_HEIGHT;
 use acacia_physics::{Vec3, WorldView};
 
 use super::{Follower, SETTLED, Sense, center, dir, hdist};
+use crate::movement::{feet_cell, hop_room_blocked_by};
 use crate::movement::{Controls, Rollout};
 use crate::pathfind::PathNode;
 use crate::pathfind::moves::MoveKind;
@@ -21,10 +23,51 @@ const TURN_FIRST_DEG: f32 = 30.0;
 /// How near the centre a ClimbDown started on the ground walks before it lets the body drop onto the ladder.
 const ON_LADDER_TOP: f32 = 0.01;
 
+/// The cell this node lands on when it changes height, whose headroom decides whether the hop fits (`None` for a
+/// hop that stays on the level: only the takeoff matters there).
+fn landing_cell(node: &PathNode) -> Option<[i32; 3]> {
+    match node.kind {
+        MoveKind::Ascend | MoveKind::ClimbUp => Some([node.pos[0], node.feet.floor() as i32, node.pos[2]]),
+        _ => None,
+    }
+}
+
+/// The cell that makes this node's jump pointless, if any: the takeoff has no room, or the landing has none (t110).
+/// The follower turns a blocked node back into a re-plan instead of pressing jump in place.
+pub(super) fn hop_blocked(node: &PathNode, s: &Sense, w: &(impl WorldView + ?Sized), dist: f32, along: f32) -> Option<[i32; 3]> {
+    if !wants_jump(node, s, dist, along) {
+        return None;
+    }
+    hop_room_blocked_by(w, feet_cell(s.pos), landing_cell(node))
+}
+
+/// Whether the node cannot be reached without the press: a full block or a drop over a gap. A hop that is only an aid
+/// (a half step the body walks up by itself) is suppressed when there is no room, but never called impassable -- t110
+/// found that calling those impassable made a builder report `no stand` forty-five cells in.
+pub(super) fn jump_is_required(node: &PathNode, s: &Sense) -> bool {
+    match node.kind {
+        MoveKind::ClimbUp | MoveKind::Parkour => true,
+        _ => node.feet - s.pos[1] > STEP_HEIGHT + 0.1,
+    }
+}
+
+/// Whether the node's motion needs a jump press this tick, before the ceiling rule has a say. One definition, used
+/// by the steering and by the follower's "this node cannot be reached" check (t110).
+pub(super) fn wants_jump(node: &PathNode, s: &Sense, dist: f32, along: f32) -> bool {
+    let rise = node.feet - s.pos[1];
+    match node.kind {
+        MoveKind::Ascend => rise > 0.3 && dist < 1.3,
+        MoveKind::ClimbUp => true,
+        MoveKind::Parkour => s.on_ground && along > 0.35,
+        _ if s.in_water => rise > -0.3,
+        _ => false,
+    }
+}
+
 impl Follower {
     #[allow(clippy::too_many_arguments)]
     /// `coast`: on the final node, where releasing every key now comes to rest (simulated).
-    pub(super) fn steer(&mut self, s: &Sense, c: &mut Controls, node: &PathNode, target: Vec3, dist: f32, speed: f32, last: bool, coast: Option<Vec3>) {
+    pub(super) fn steer(&mut self, s: &Sense, w: &dyn WorldView, c: &mut Controls, node: &PathNode, target: Vec3, dist: f32, speed: f32, last: bool, coast: Option<Vec3>) {
         let (dx, dz) = (target[0] - s.pos[0], target[2] - s.pos[2]);
         let want = (-dx).atan2(dz).to_degrees();
         if dist > 0.05 {
@@ -51,14 +94,9 @@ impl Follower {
         } else {
             1.0
         };
-        let rise = node.feet - s.pos[1];
-        c.jump = match node.kind {
-            MoveKind::Ascend => rise > 0.3 && dist < 1.3,
-            MoveKind::ClimbUp => true,
-            MoveKind::Parkour => s.on_ground && self.along(s.pos) > 0.35,
-            _ if s.in_water => rise > -0.3,
-            _ => false,
-        };
+        // t110: a press under a ceiling is a bump, not a hop (t107: 131 `jump=1` packets, `rise_ground=+0.000`).
+        c.jump = wants_jump(node, s, dist, self.along(s.pos))
+            && hop_room_blocked_by(w, feet_cell(s.pos), landing_cell(node)).is_none();
         let wanted = !s.in_water
             && match node.kind {
                 MoveKind::Parkour | MoveKind::Run | MoveKind::Hop => true,
@@ -88,7 +126,7 @@ impl Follower {
     }
 
     /// Distance travelled from the segment origin along the segment direction.
-    fn along(&self, pos: Vec3) -> f32 {
+    pub(super) fn along(&self, pos: Vec3) -> f32 {
         let t = center(&self.path[self.index]);
         let (sx, sz) = (t[0] - self.origin[0], t[2] - self.origin[2]);
         let len = sx.hypot(sz).max(1e-3);

@@ -1,4 +1,5 @@
 mod encoding;
+mod offhand;
 mod prediction;
 
 use acacia_client::proto::packets::ItemStackResponse;
@@ -9,7 +10,9 @@ use acacia_client::proto::types::{
 use acacia_client::proto::{encode_packet, Packet, RawPacket};
 use bytes::BytesMut;
 
+use super::plan::Plan;
 use super::slot::{BlockKind, Screen};
+use super::{Op, SlotRef};
 use crate::state::{Container, GameState, ItemStack};
 
 pub(super) fn raw<T: Packet>(packet: &T) -> RawPacket {
@@ -69,4 +72,36 @@ pub(super) fn response(request_id: i32, ok: bool, slots: &[(ContainerSlotType, u
 
 pub(super) fn response_packet(entries: Vec<ItemStackResponsesItem>) -> RawPacket {
     raw(&ItemStackResponse { responses: entries })
+}
+
+/// `Plan::applied`: the read-back `Bot::send_plan` uses when a write's response did not arrive. The
+/// server's own slot updates are enough to call the request done (`items/actions.rs`).
+#[test]
+fn a_plan_applies_once_the_tracked_slots_hold_its_prediction() {
+    let mut state = state_with(&[(0, stack(5, 3, 7))]);
+    let plan = Plan::build(&state, screen(&state), &[Op::Transfer { from: SlotRef::Main(0), to: SlotRef::Main(9), count: 3 }]).unwrap();
+    assert!(!plan.applied(&state), "nothing has moved yet");
+
+    state.inventory.main[0] = ItemStack::default();
+    state.inventory.main[9] = stack(5, 2, 9);
+    assert!(!plan.applied(&state), "a partial move is not the prediction");
+
+    state.inventory.main[9] = stack(5, 3, 9);
+    assert!(plan.applied(&state), "counts match the prediction; the stack id is the server's");
+}
+
+#[test]
+fn a_plan_that_moves_into_a_container_reads_the_open_window_back() {
+    let mut state = state_with(&[(0, stack(5, 3, 7))]);
+    open_container(&mut state, WindowType::Container, vec![ItemStack::default()]);
+    let plan = Plan::build(&state, screen(&state), &[Op::Transfer { from: SlotRef::Main(0), to: SlotRef::Container(0), count: 3 }]).unwrap();
+    assert!(!plan.applied(&state));
+
+    state.inventory.main[0] = ItemStack::default();
+    state.containers.open.as_mut().unwrap().slots[0] = stack(5, 3, 9);
+    assert!(plan.applied(&state));
+
+    // Closing the window hides the slots: nothing can be read back.
+    state.containers.open = None;
+    assert!(!plan.applied(&state));
 }

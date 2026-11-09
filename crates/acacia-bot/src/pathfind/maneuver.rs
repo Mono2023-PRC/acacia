@@ -26,12 +26,16 @@ pub(crate) fn to_edge(s: &Sense, from: BlockPos, (dx, dz): (i32, i32), c: &mut C
 }
 
 /// Pillaring into `cell`: jumps in place. True once the feet are above the cell.
-pub(crate) fn rise(s: &Sense, cell: BlockPos, c: &mut Controls) -> bool {
+///
+/// `room` is the ceiling verdict from [`jump_room_blocked_by`] taken before the maneuver (t110): under a solid cell
+/// at `feet + 2` the press does nothing but bump the head (t107: 131 `jump=1`, `rise_ground=+0.000`), so it is not
+/// sent at all.
+pub(crate) fn rise(s: &Sense, cell: BlockPos, room: Option<BlockPos>, c: &mut Controls) -> bool {
     c.stop();
     c.sneak = false;
     if s.pos[1] >= (cell[1] + 1) as f32 + PILLAR_CLEARANCE {
         return true;
     }
-    c.jump = s.on_ground;
+    c.jump = s.on_ground && room.is_none();
     false
 }

@@ -212,8 +212,18 @@ impl Follower {
                 return FollowStatus::Stuck;
             }
         }
+        // t110: the node needs a jump it cannot make (a ceiling right above the feet). Pressing is what t107
+        // measured -- 131 `jump=1` under a one-block ceiling, `rise_ground=+0.000`. Hand it back to the planner,
+        // which routes around it (or, with `allow_dig`, digs the ceiling out and tries again).
+        let along = self.along(s.pos);
+        // Only a *required* jump makes the node impassable: when the press is merely an aid (a half step the body
+        // walks up by itself) the steering drops it and the walk carries on.
+        if steer::hop_blocked(&node, s, w, dist, along).is_some() && steer::jump_is_required(&node, s) {
+            c.stop();
+            return FollowStatus::OffPath;
+        }
         let coast = live.filter(|_| last).and_then(|l| Self::coast_end(l, c, w, spend));
-        self.steer(s, c, &node, target, dist, speed, last, coast);
+        self.steer(s, w, c, &node, target, dist, speed, last, coast);
         FollowStatus::Moving
     }
 

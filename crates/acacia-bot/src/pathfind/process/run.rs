@@ -76,6 +76,9 @@ impl Processes {
     /// Gives control to one process for a tick and lets the tick pass (not once every process has finished).
     /// Errors only when the bot cannot move or is disconnected; processes' own failures are their outcomes.
     pub async fn tick(&mut self, bot: &mut Bot) -> Result<Status, ActionError> {
+        // Where a refused search reports its numbers (t117): the pilot lives down there and only the bot has the slot.
+        self.arbiter.adopt_plan_sink(bot.plan_stats.clone());
+        // The incremental search table outlives a walk the same way the report slot does (t145).
         let Some(movement) = bot.movement.as_ref() else {
             return Err(ActionError::NotPossible("processes need a physics bot (BotConfig.physics)".into()));
         };

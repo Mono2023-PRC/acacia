@@ -12,7 +12,8 @@ fn stands_still_like_vanilla_and_acknowledges_server_moves() {
     let first = idle.tick(&player(64.0), false).unwrap();
     assert_eq!(first.tick, FIRST_TICK);
     assert_eq!(first.play_mode, PlayerAuthInputPlayMode::Normal);
-    assert_eq!(first.position.y, 64.0 + super::super::EYE_HEIGHT);
+    // `PlayerAuthInput.Position` is the feet (relay t39/t40).
+    assert_eq!(first.position.y, 64.0);
     assert_eq!((first.delta.x, first.delta.y, first.delta.z), (0.0, -0.0784, 0.0));
     // Vanilla's standing-still flags, exactly (a bitset on the wire, so order is irrelevant).
     assert_eq!(first.input_data.len(), 2);

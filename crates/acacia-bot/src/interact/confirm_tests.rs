@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use acacia_world::BlockRegistry;
 
-use super::{give_back, unpredict, Confirm, Expect, Verdict};
+use super::{give_back, unpredict, Confirm, Expect, Failure, Verdict};
 use crate::cadence::splitmix;
 use crate::governor::Governor;
 use crate::state::ItemStack;
@@ -111,7 +111,8 @@ fn flip_row(w: &mut World, net: &Net, g: &mut Governor) -> Outcome {
             now += 1;
             g.tick(None);
             let echoed = w.tick(net, now).contains(&x);
-            let v = c.check(now, w.cell(x), echoed);
+            let echo_id = echoed.then(|| w.client[&x]);
+            let v = c.check(now, w.cell(x), echo_id);
             if place && !matches!(v, Verdict::Wait | Verdict::Done) && c.unechoed() {
                 w.client.insert(x, old);
             }
@@ -175,8 +176,9 @@ fn refused_actions_fail_after_three_tries_and_leave_the_world_as_the_server_has_
     assert!(r.verdicts.iter().all(|v| matches!(v, Verdict::Failed(_))), "{:?}", r.verdicts);
     assert_eq!(r.max_tries, 3);
     assert!(ghosts(&w).is_empty());
-    // A refusal is echoed: each try ends at the echo (4 ticks), not at the timeout (12).
-    assert!(r.ticks < 20 * 3 * 6 + 200, "{} ticks", r.ticks);
+    // A refusal is believed only at the deadline: an echo carrying the old block may be an older update
+    // (NetEase resyncs whole sections), so each try is waited out (12 ticks) instead of ending at its echo.
+    assert!(r.ticks < 20 * 3 * 14 + 200, "{} ticks", r.ticks);
 }
 
 #[test]
@@ -184,8 +186,8 @@ fn a_cell_changed_otherwise_fails_at_once() {
     let w = World::new();
     let mut c = Confirm::new(Expect::Gone, Some(w.stone), 0, 12, 3);
     let dirt = w.registry.states_of("minecraft:dirt").next().expect("dirt");
-    assert_eq!(c.check(1, Some(dirt), false), Verdict::Wait, "before the deadline anything may still come");
-    assert!(matches!(c.check(12, Some(dirt), false), Verdict::Failed(why) if why.contains("dirt")));
+    assert_eq!(c.check(1, Some(dirt), None), Verdict::Wait, "before the deadline anything may still come");
+    assert!(matches!(c.check(12, Some(dirt), None), Verdict::Failed(Failure::Other { name }) if name.contains("dirt")));
 }
 
 #[test]
@@ -193,10 +195,10 @@ fn a_predicted_block_counts_only_once_the_server_echoes_it() {
     let w = World::new();
     let stone = w.registry.states_of("minecraft:stone").next().expect("stone");
     let mut c = Confirm::new(Expect::Solid, Some(w.air), 0, 12, 3).predicted();
-    assert_eq!(c.check(1, Some(stone), false), Verdict::Wait, "our own prediction is no confirmation");
-    assert_eq!(c.check(12, Some(stone), false), Verdict::Retry, "no echo by the deadline: as unchanged");
+    assert_eq!(c.check(1, Some(stone), None), Verdict::Wait, "our own prediction is no confirmation");
+    assert_eq!(c.check(12, Some(stone), None), Verdict::Retry, "no echo by the deadline: as unchanged");
     c.retried(12, 12);
-    assert_eq!(c.check(15, Some(stone), true), Verdict::Done);
+    assert_eq!(c.check(15, Some(stone), Some(stone.0)), Verdict::Done);
 }
 
 #[test]
@@ -217,4 +219,59 @@ fn a_failed_pipelined_placement_gives_its_item_back_past_later_predictions() {
     assert_eq!(give_back(&one, &ItemStack::default(), &one), Some(two.clone()), "the last one's back too");
     let other = ItemStack { network_id: 6, count: 4, ..ItemStack::default() };
     assert_eq!(give_back(&other, &one, &two), None, "another item there now: the server's update decides");
+}
+
+#[test]
+fn a_prediction_only_counts_once_the_echo_lands() {
+    let registry = BlockRegistry::vanilla_arc();
+    let stone = registry.states_of("minecraft:stone").next().expect("stone");
+    let air = registry.states_of("minecraft:air").next().expect("air");
+    let mut c = Confirm::new(Expect::Solid, Some(air.0), 0, 20, 3).predicted();
+    assert!(!c.satisfied(Some((stone.0, &stone.1)), false), "the bot's own prediction is not the server's word");
+    assert!(c.satisfied(Some((stone.0, &stone.1)), true));
+    // A retry re-arms the prediction: only the next echo counts again.
+    c.retried(1, 20);
+    assert!(!c.satisfied(Some((stone.0, &stone.1)), false));
+    assert!(c.satisfied(Some((stone.0, &stone.1)), true));
+}
+
+#[test]
+fn a_break_settles_on_air_without_waiting_for_an_echo() {
+    let registry = BlockRegistry::vanilla_arc();
+    let stone = registry.states_of("minecraft:stone").next().expect("stone");
+    let air = registry.states_of("minecraft:air").next().expect("air");
+    let c = Confirm::new(Expect::Gone, Some(stone.0), 0, 20, 3);
+    assert!(c.satisfied(Some((air.0, &air.1)), false), "the cell turning to air is the server breaking it");
+    assert!(!c.satisfied(Some((stone.0, &stone.1)), false));
+}
+
+#[test]
+fn an_echo_showing_the_old_block_is_the_server_refusing() {
+    let w = World::new();
+    let mut c = Confirm::new(Expect::Gone, Some(w.stone), 0, 12, 1);
+    assert_eq!(c.check(1, w.cell(0), Some(w.stone)), Verdict::Wait, "the echo may be an older update: wait it out");
+    assert_eq!(c.check(12, w.cell(0), None), Verdict::Failed(Failure::ServerRejected), "the block is still there");
+}
+
+#[test]
+fn an_echo_the_view_never_shows_is_a_stale_view_not_a_refusal() {
+    let w = World::new();
+    let mut c = Confirm::new(Expect::Gone, Some(w.stone), 0, 12, 2);
+    // The server says air at tick 5, the view still shows stone: wait, the view may be a packet behind.
+    assert_eq!(c.check(5, w.cell(0), Some(w.air)), Verdict::Wait);
+    // One more try is allowed; the stale-view evidence stays with the confirmation.
+    assert_eq!(c.check(12, w.cell(0), None), Verdict::Retry);
+    c.retried(12, 12);
+    // The deadline runs out with the view still on stone: resync the section, do not resend the break.
+    assert_eq!(c.check(24, w.cell(0), None), Verdict::Failed(Failure::NoLocalChange));
+    assert_eq!(c.failure(Some("minecraft:stone")).kind(), "no_local_change");
+}
+
+#[test]
+fn nothing_at_all_is_no_effect() {
+    let w = World::new();
+    let mut c = Confirm::new(Expect::Gone, Some(w.stone), 0, 12, 1);
+    assert_eq!(c.check(12, w.cell(0), None), Verdict::Failed(Failure::NoEffect));
+    assert_eq!(c.failure(Some("minecraft:stone")).kind(), "no_effect");
+    assert_eq!(c.failure(None).kind(), "unloaded");
 }

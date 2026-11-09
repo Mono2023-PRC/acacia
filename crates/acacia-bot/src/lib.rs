@@ -4,14 +4,18 @@
 //! Each [`Bot`] owns its state and updates it as packets arrive in [`Bot::next`], so there is no
 //! locking and no background work beyond the client's own connection task.
 
+pub mod activity;
 pub mod books;
 pub mod act_timing;
 pub mod build;
 mod bot;
 mod cadence;
 pub mod cancel;
+pub mod combat;
 mod config;
 mod elytra;
+pub mod desync;
+pub mod escape;
 pub mod events;
 mod fishing;
 pub mod forms;
@@ -42,6 +46,7 @@ pub mod text;
 pub mod trace;
 
 pub use acacia_client::{self as client, proto, ConnectError, DisconnectReason, Reason, Violation};
+pub use activity::Activity;
 pub use bot::Bot;
 pub use cancel::CancelHandle;
 pub use config::BotConfig;

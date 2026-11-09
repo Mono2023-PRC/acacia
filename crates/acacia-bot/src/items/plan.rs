@@ -87,6 +87,16 @@ impl Plan {
         self.slots.iter().find(|(s, _)| *s == slot).map(|(_, stack)| stack)
     }
 
+    /// The tracked slots already hold what the plan predicted: the server's slot updates landed even
+    /// though its `ItemStackResponse` did not (see `Bot::send_plan`'s read-back). Compares the item,
+    /// count and damage; stack ids are the server's to assign.
+    pub fn applied(&self, state: &GameState) -> bool {
+        self.slots.iter().all(|(slot, want)| {
+            let Some(now) = slot.stack(state) else { return false };
+            now.network_id == want.network_id && now.count == want.count && now.metadata == want.metadata
+        })
+    }
+
     /// Writes the prediction to the state, then the server's counts and stack ids on top of it.
     pub fn commit(self, state: &mut GameState, response: &ItemStackResponsesItem) {
         for (slot, mut stack) in self.slots {
@@ -134,6 +144,13 @@ impl Plan {
                     dst_stack.count += moved.count;
                 }
             }
+            // t137: `Swap` into the offhand is refused with `50 FailedToValidateDstSlot` under both
+            // numberings, so the last rung of the ladder moves the stack instead of exchanging it —
+            // `Take` onto the cursor, then `Place` into the offhand (an exchange would need a third
+            // click to put the old item back, which the empty-offhand case does not).
+            Op::Swap { a, b } if self.screen.offhand_via_cursor() && (a == SlotRef::Offhand || b == SlotRef::Offhand) => {
+                self.swap_through_cursor(state, a, b)?;
+            }
             Op::Swap { a, b } => {
                 let (ia, ib) = (self.load(state, a)?, self.load(state, b)?);
                 let (sa, sb) = (&self.slots[ia].1, &self.slots[ib].1);
@@ -161,6 +178,27 @@ impl Plan {
             }
         }
         Ok(())
+    }
+
+
+    /// `Swap` expressed as two transfers **inside the same request**: `Take` onto the cursor, then
+    /// `Place` into the offhand. Both actions travel in one `ItemStackRequest`, so the server accepts
+    /// or rejects the pair as a whole — there is no half-applied state and therefore no rollback to
+    /// write (unlike the equip ladder, whose two clicks are two separate requests). Only for an empty
+    /// offhand: an exchange would need a third click to put the old item back.
+    fn swap_through_cursor(&mut self, state: &GameState, a: SlotRef, b: SlotRef) -> Result<(), ActionError> {
+        if a == SlotRef::Offhand && b == SlotRef::Offhand {
+            return Err(not_possible("nothing to swap"));
+        }
+        let (offhand, other) = if a == SlotRef::Offhand { (a, b) } else { (b, a) };
+        let off = self.load(state, offhand)?;
+        if !self.slots[off].1.is_empty() {
+            return Err(not_possible("the offhand holds something; an exchange needs a third click"));
+        }
+        let src = self.load(state, other)?;
+        let count = self.slots[src].1.count.min(255) as u8;
+        self.push(state, Op::Transfer { from: other, to: SlotRef::Cursor, count })?;
+        self.push(state, Op::Transfer { from: SlotRef::Cursor, to: offhand, count })
     }
 
     fn encode(&mut self, op: Op) {

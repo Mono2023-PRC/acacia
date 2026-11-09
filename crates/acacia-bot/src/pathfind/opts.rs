@@ -100,6 +100,69 @@ impl SearchOpts {
     }
 }
 
+/// What a search covered, so a refusal can say which kind of refusal it is (t117).
+///
+/// A caller that gets "no path" cannot tell `the goal is walled off` from `the search stopped early` from the path
+/// alone -- and those ask for opposite next moves (change the goal vs. raise the budget or split the trip). The
+/// numbers here are the difference: `budget_exhausted` says whether the search stopped because it was told to, and
+/// `target_region_reached` says whether it ever came near enough to the goal to have an opinion about it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanStats {
+    /// Nodes taken off the frontier (the `visited` count of the search that produced this path).
+    pub nodes_expanded: usize,
+    /// The budget this search ran under ([`SearchOpts::max_nodes`] as it was then, not the default).
+    pub max_nodes: usize,
+    /// Stopped at `max_nodes` or the time budget instead of running out of places to look.
+    pub budget_exhausted: bool,
+    /// Some expanded node was inside the goal's neighbourhood (see [`Goal::region_distance`]).
+    pub target_region_reached: bool,
+    /// How many blocks short of that neighbourhood the closest expanded node was; `None` when the goal has no
+    /// neighbourhood to measure against (`XZ`, `Y`, `Away`).
+    pub closest_short: Option<f32>,
+    /// What this path costs, in the units the search minimises — the number a caller compares between two plans,
+    /// and the one that has to survive a repair (t150). A refused search prices what it did reach, so `0.0` means
+    /// "nothing to price" (a plan that starts on the goal), never "free".
+    pub cost: f32,
+}
+
+impl Default for PlanStats {
+    /// A search that has not run yet: nothing expanded, nothing priced.
+    fn default() -> Self {
+        Self { nodes_expanded: 0, max_nodes: 0, budget_exhausted: false, target_region_reached: false, closest_short: None, cost: 0.0 }
+    }
+}
+
+impl PlanStats {
+    /// `true` when the search said everything it could: not cut short, and it did reach the goal's neighbourhood.
+    pub fn conclusive(&self) -> bool {
+        !self.budget_exhausted && self.target_region_reached
+    }
+
+    /// One line a message can carry: what was searched and what that leaves open.
+    pub fn describe(&self) -> String {
+        let mut text = format!("{} nodes of at most {}", self.nodes_expanded, self.max_nodes);
+        if let Some(short) = self.closest_short {
+            text.push_str(&format!(", closest {short:.1} blocks short of the goal"));
+        }
+        if self.budget_exhausted {
+            text.push_str(" (search budget ran out)");
+        }
+        text
+    }
+
+    /// The same numbers as JSON, for a failure message that a tool layer parses instead of reading prose.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "nodes_expanded": self.nodes_expanded,
+            "max_nodes": self.max_nodes,
+            "budget_exhausted": self.budget_exhausted,
+            "target_region_reached": self.target_region_reached,
+            "closest_short": self.closest_short,
+            "cost": self.cost,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Path {
     /// Nodes after the start, in order.
@@ -115,4 +178,6 @@ pub struct Path {
     /// Nodes expanded.
     pub visited: usize,
     pub macro_stats: MacroStats,
+    /// The same search, counted for a caller that has to explain the failure (t117).
+    pub plan: PlanStats,
 }

@@ -9,6 +9,11 @@
 //! opening wooden doors and gates is on by default. The navigator performs them with the bot's
 //! break, place and use actions.
 //!
+//! Walking to a dropped item goes through the same search and digs by default
+//! ([`CollectOpts`]): the block a bot just mined leaves its own wall between the bot and the drop.
+//! A pickup that still fails names the cell that stopped the walk ([`PickupFailure::blocked_at`])
+//! instead of only "cannot reach".
+//!
 //! The search is synchronous and reads blocks through [`Blocks`], so it runs against a
 //! [`ChunkView`](acacia_world::ChunkView), a shared world snapshot ([`WorldBlocks`], used on a
 //! blocking thread for long searches) or a synthetic grid in tests.
@@ -45,7 +50,8 @@ mod moves;
 mod node;
 mod opts;
 mod physview;
-mod pilot;
+mod pickup;
+pub(crate) mod pilot;
 pub mod process;
 mod profile;
 mod reach;
@@ -62,6 +68,7 @@ mod work;
 mod tests;
 
 pub use astar::{Path, SearchOpts, search, search_cached, search_from, start_node};
+pub use opts::PlanStats;
 pub use cache::RolloutCache;
 pub use macros::MacroStats;
 pub use control::{Controller, Phase, RunCtl};
@@ -75,6 +82,7 @@ pub use goal::Goal;
 pub use goto::{GotoOpts, NavStatus, Navigator};
 pub use job::{Answer, SearchJob, Spawn, answered};
 pub use pilot::Pilot;
+pub use pickup::{CollectError, CollectOpts, PICKUP_RANGE, PickupFailure};
 pub use process::{Backfill, Evade, Follow, Goto, Processes, Target};
 pub use kit::{DEFAULT_SCAFFOLD, Kit};
 pub use moves::MoveKind;

@@ -162,7 +162,7 @@ impl Exec {
         } else {
             self.report.max_error = self.report.max_error.max(err);
         }
-        let phase = self.ctl.step(&b, &mut |pc: &Controls| rollout::peek(live, pc, w), c);
+        let phase = self.ctl.step(&b, &mut |pc: &Controls| rollout::peek(live, pc, w), w, c);
         if phase == Phase::Going {
             self.t += 1;
             self.report.executed += 1;

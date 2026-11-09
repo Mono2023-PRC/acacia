@@ -44,7 +44,11 @@ impl Bot {
                     self.pending.push_back(BotEvent::Disconnected(reason));
                     return Err(ActionError::Disconnected);
                 }
-                Some(Step::Tick) => Progress::Tick,
+                Some(Step::Tick) => {
+                    // Every tick, so `desync_ticks` counts a drift that outlives a single tick (desync.rs).
+                    self.note_desync();
+                    Progress::Tick
+                }
                 Some(Step::Idle) => continue,
                 Some(Step::Packet(packet)) => {
                     self.note_echo(&packet);

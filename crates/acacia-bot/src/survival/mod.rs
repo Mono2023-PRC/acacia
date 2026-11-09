@@ -13,7 +13,7 @@ mod tools;
 mod tests;
 
 pub use auto_eat::AutoEat;
-pub use equip::{Destination, EquipMethod};
+pub use equip::{Destination, EquipAction, EquipAttempt, EquipMethod, EquipReport};
 pub use food::{food, use_ticks, Food, FoodChoice};
 
 use crate::{ActionError, Bot};

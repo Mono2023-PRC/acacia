@@ -7,7 +7,7 @@ use acacia_client::proto::packets::{
 use acacia_client::proto::types::{InputData as F, Vec2f, Vec3f};
 use acacia_physics::{Input, TickOutput};
 
-use super::EYE_HEIGHT;
+
 
 /// (start, stop) transitions this tick, plus the held states.
 pub(super) struct Edges {
@@ -97,7 +97,10 @@ pub(super) fn build(input: &Input, out: &TickOutput, e: &Edges, tick: u64, loade
         pitch,
         yaw,
         // A fixed offset whatever the pose: the servers read feet as position - 1.62 even when sneaking.
-        position: vec3([out.position[0], out.position[1] + EYE_HEIGHT, out.position[2]]),
+        // TODO(t38): relay t39 says the protocol field is the feet (`pos.y=29.62` vs `block_position=28`); sending
+        // the feet changes what `prediction_sync` compares against the recorded traces (trace_regression: all
+        // replays mismatch), so the sync and its fixtures have to be reworked together — next task.
+        position: vec3(out.position),
         move_vector: Vec2f { x: out.move_vector[0], z: out.move_vector[1] },
         head_yaw: yaw,
         input_data: flags,

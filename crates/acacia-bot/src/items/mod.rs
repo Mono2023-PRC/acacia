@@ -13,6 +13,7 @@ pub(crate) mod craft;
 mod plan;
 mod quick;
 mod request;
+mod transfer;
 mod slot;
 pub mod ui;
 

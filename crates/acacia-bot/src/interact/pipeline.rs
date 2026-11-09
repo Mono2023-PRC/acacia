@@ -29,7 +29,7 @@ pub(crate) struct Undo<T> {
 struct Item<T> {
     target: BlockPos,
     confirm: Confirm,
-    echoed: bool,
+    echoed: Option<u32>,
     undo: Undo<T>,
     sent_at: Instant,
 }
@@ -57,7 +57,7 @@ impl<T> Default for Pipeline<T> {
 
 impl<T> Pipeline<T> {
     pub fn push(&mut self, target: BlockPos, confirm: Confirm, undo: Undo<T>) {
-        self.items.push(Item { target, confirm, echoed: false, undo, sent_at: Instant::now() });
+        self.items.push(Item { target, confirm, echoed: None, undo, sent_at: Instant::now() });
     }
 
     pub fn targets(&self) -> impl Iterator<Item = BlockPos> + '_ {
@@ -73,9 +73,9 @@ impl<T> Pipeline<T> {
         std::mem::take(&mut self.items).len()
     }
 
-    /// A block update for `pos` arrived.
-    pub fn echo(&mut self, pos: BlockPos) {
-        self.items.iter_mut().filter(|i| i.target == pos).for_each(|i| i.echoed = true);
+    /// A block update for `pos` arrived, carrying `id`.
+    pub fn echo(&mut self, pos: BlockPos, id: u32) {
+        self.items.iter_mut().filter(|i| i.target == pos).for_each(|i| i.echoed = Some(id));
     }
 
     /// Decides what can be decided at tick `now`, reading cells through `cell`.
@@ -91,11 +91,11 @@ impl<T> Pipeline<T> {
                 continue;
             }
             let it = self.items.swap_remove(i);
-            let (first, waited) = (it.confirm.tries() == 1 && echoed, it.sent_at.elapsed());
+            let (first, waited) = (it.confirm.tries() == 1 && echoed.is_some(), it.sent_at.elapsed());
             out.push(match verdict {
                 Verdict::Done => Decided { target: it.target, result: Ok(()), echoed: first, waited, undo: None },
                 v => {
-                    let why = if let Verdict::Failed(why) = v { why } else { "the server did not place it".into() };
+                    let why = if let Verdict::Failed(why) = v { why.to_string() } else { "the server did not place it".into() };
                     let replaced = it.undo.replaced.filter(|_| it.confirm.unechoed());
                     Decided { target: it.target, result: Err(why), echoed: first, waited, undo: Some(Undo { replaced, extra: it.undo.extra }) }
                 }
@@ -116,7 +116,7 @@ pub(crate) struct StackUndo {
 impl Bot {
     /// [`Bot::place_block_at`] that returns once the click is out; [`Bot::settle_placements`] tells how it went.
     pub(crate) async fn place_sent(&mut self, against: BlockPos, face: Face, click: Vec3) -> Result<(), ActionError> {
-        let (target, half_slab) = self.aim_placement(against, face, click).await?;
+        let (target, half_slab, against, face, click) = self.aim_placement(against, face, click).await?;
         if self.in_flight.targets().any(|t| t == target) {
             return Err(ActionError::NotPossible(format!("a placement at {target:?} is already in flight")));
         }
@@ -157,13 +157,15 @@ impl Bot {
         if self.in_flight.is_empty() {
             return;
         }
-        let positions: Vec<BlockPos> = match p.id {
-            UpdateBlock::ID => p.decode::<UpdateBlock>().ok().filter(|u| u.layer == 0).map(|u| vec![[u.position.x, u.position.y, u.position.z]]).unwrap_or_default(),
-            UpdateBlockSynced::ID => p.decode::<UpdateBlockSynced>().ok().filter(|u| u.layer == 0).map(|u| vec![[u.position.x, u.position.y, u.position.z]]).unwrap_or_default(),
-            UpdateSubchunkBlocks::ID => p.decode::<UpdateSubchunkBlocks>().map(|u| u.blocks.iter().map(|b| [b.position.x, b.position.y, b.position.z]).collect()).unwrap_or_default(),
+        let positions: Vec<(BlockPos, u32)> = match p.id {
+            UpdateBlock::ID => p.decode::<UpdateBlock>().ok().filter(|u| u.layer == 0).map(|u| vec![([u.position.x, u.position.y, u.position.z], u.block_runtime_id)]).unwrap_or_default(),
+            UpdateBlockSynced::ID => p.decode::<UpdateBlockSynced>().ok().filter(|u| u.layer == 0).map(|u| vec![([u.position.x, u.position.y, u.position.z], u.block_runtime_id)]).unwrap_or_default(),
+            UpdateSubchunkBlocks::ID => {
+                p.decode::<UpdateSubchunkBlocks>().map(|u| u.blocks.iter().map(|b| ([b.position.x, b.position.y, b.position.z], b.runtime_id)).collect()).unwrap_or_default()
+            }
             _ => return,
         };
-        positions.into_iter().for_each(|pos| self.in_flight.echo(pos));
+        positions.into_iter().for_each(|(pos, id)| self.in_flight.echo(pos, id));
     }
 
     /// Decides the in-flight placements that can be decided now, undoing failed ones; returns each one's target

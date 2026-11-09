@@ -104,6 +104,7 @@ pub fn replay(events: &[Event], tolerance: f32, resync: bool) -> Report {
     let blobs = Arc::new(MemoryBlobStore::with_payloads());
     world.set_blob_store(blobs.clone());
     let mut movement = Movement::new();
+    movement.use_recorded_ticks();
     // Our eye position and velocity per input tick.
     let mut ours: HashMap<u64, (Vec3, Vec3)> = HashMap::new();
     let mut sent: HashMap<u64, (Vec3, Vec3)> = HashMap::new();
@@ -192,7 +193,11 @@ pub fn replay(events: &[Event], tolerance: f32, resync: bool) -> Report {
                 let (Some(view), Some(registry)) = (world.view(), world.registry()) else { continue };
                 let Some(out) = movement.tick(&PhysicsWorld { view, registry }) else { continue };
                 let pos = vec3(&out.position);
-                ours.insert(out.tick, (pos, vec3(&out.delta)));
+                // The `Position` field should be the feet (relay t39) but every fixture here was recorded while we
+                // sent the eye (`feet + EYE_HEIGHT`) and its corrections live in that frame: compare there, so a
+                // live-packet change does not turn every recorded correction into a mismatch.
+                let recorded_frame = [pos[0], pos[1] + crate::movement::EYE_HEIGHT, pos[2]];
+                ours.insert(out.tick, (recorded_frame, vec3(&out.delta)));
                 sent.insert(out.tick, (recorded, vec3(&rec.delta)));
                 let received = view.chunk((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4).is_some();
                 frozen.insert(out.tick, received.then(|| movement.freeze_at(out.tick).0));

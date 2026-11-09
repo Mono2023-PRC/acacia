@@ -1,5 +1,7 @@
 //! A macro move's controller: planned ones are stored on their path node, shortcuts are made by the follower.
 
+use acacia_physics::WorldView;
+
 use super::control::{Controller, Phase, RunCtl};
 use super::leap::LeapCtl;
 use super::profile::MovementProfile;
@@ -36,11 +38,11 @@ impl Macro {
 }
 
 impl Controller for Macro {
-    fn step(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, c: &mut Controls) -> Phase {
+    fn step<W: WorldView + ?Sized>(&mut self, b: &Body, peek: &mut dyn FnMut(&Controls) -> Body, w: &W, c: &mut Controls) -> Phase {
         match self {
-            Macro::Leap(l) => l.step(b, peek, c),
-            Macro::Run(r) => r.step(b, peek, c),
-            Macro::Shortcut(s) => s.step(b, peek, c),
+            Macro::Leap(l) => l.step(b, peek, w, c),
+            Macro::Run(r) => r.step(b, peek, w, c),
+            Macro::Shortcut(s) => s.step(b, peek, w, c),
         }
     }
 }

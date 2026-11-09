@@ -65,8 +65,9 @@ pub(crate) const BOOK_SIGN: Range = (1000, 2000);
 pub(crate) const STOP_USE_ON: Range = (30, 140);
 /// Crosshair reported on an entity to clicking it (n=10: 75-1277 ms, most under 450).
 pub(crate) const ENTITY_HOVER: Range = (75, 450);
-/// One attack to the next at the earliest: 8-13 CPS, under every anticheat's limit (anticheat-interaction-checks.md).
-pub(crate) const ATTACK_GAP: Range = (75, 130);
+/// One attack to the next: vanilla's own cooldown is 1.6-4 swings a second and the server holds back much
+/// faster ones (t27: 538 swings in 60 s, none counted). 2 CPS.
+pub(crate) const ATTACK_GAP: Range = (450, 550);
 /// Entity right-click: the transaction to the client's own swing (n=5: 124-203 ms).
 pub(crate) const ENTITY_SWING: Range = (120, 210);
 /// Between punches breaking a boat (placeholder, no capture): its damage wears off each tick, so hits a CLICK

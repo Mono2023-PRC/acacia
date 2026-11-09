@@ -136,7 +136,15 @@ fn ascend<B: Blocks>(t: &Terrain<B>, p: BlockPos, from: Spot, (dx, dz): (i32, i3
         && t.obstruct_from(p, from, Rect::toward(dx, dz), feet, |q, c, s| cl.clear(t, q, c, s))
         && t.obstruct(up, Rect::toward(-dx, -dz), feet, |q, c, s| cl.clear(t, q, c, s));
     if ok && cl.work.breaks() > 0 {
-        push(t, out, up, Spot::stand(feet, CARVED), MoveKind::Ascend, costs::ascend() + cl.cost, cl.work);
+        // t144: "dig the head room out and hop up" is the shape that fails on a live body -- the live session
+        // pressed jump 1288 times with the feet never leaving the ground while the model dug the same cells by hand.
+        // A tunnel at this level clears the same cell and needs no jump, so the hop pays for the tunnel it avoids:
+        // two breaks of the cell ahead (feet and head) are what walking through would cost. When no tunnel exists
+        // (unbreakable, liquid, or the goal really is one block up) that surcharge is zero and the hop stands.
+        let side = offset(up, 0, -1, 0);
+        let tunnel = dig_cost(t, side, ctx.kit).map(|c| 2.0 * c).unwrap_or(0.0);
+        let cost = costs::ascend() + cl.cost + tunnel;
+        push(t, out, up, Spot::stand(feet, CARVED), MoveKind::Ascend, cost, cl.work);
     }
 }
 

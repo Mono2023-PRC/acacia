@@ -38,7 +38,7 @@ pub fn perform(g: &Grid, world: &PhysicsWorld, m: &mut Movement, node: &PathNode
                 for _ in 0..30 {
                     let s = sense(g, m);
                     let ready = if node.kind == MoveKind::Pillar {
-                        maneuver::rise(&s, target, &mut m.controls)
+                        maneuver::rise(&s, target, None, &mut m.controls)
                     } else {
                         maneuver::to_edge(&s, [target[0] - dx, target[1] + 1, target[2] - dz], (dx, dz), &mut m.controls)
                     };

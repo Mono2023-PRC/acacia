@@ -52,6 +52,8 @@ pub struct PlayerState {
     pub(crate) sleep_flags: [bool; 2],
     /// Own `MovePlayer`s and ready `Respawn`s seen: each needs `HandledTeleport` (movement::Idle).
     pub(crate) teleports: u32,
+    /// How many times the server has told us where the player is (spawn counts once).
+    pub confirmations: u64,
 }
 
 impl Default for PlayerState {
@@ -60,6 +62,7 @@ impl Default for PlayerState {
             runtime_entity_id: 0,
             unique_entity_id: 0,
             position: Vec3f { x: 0.0, y: 0.0, z: 0.0 },
+            confirmations: 0,
             yaw: 0.0,
             pitch: 0.0,
             game_mode: GameMode::Survival,
@@ -138,13 +141,28 @@ impl PlayerState {
         Ok(())
     }
 
+    /// Writes the position the **server** reports, with one debug line per write: t61 suspects this value is only
+    /// ever set at spawn (vanilla movement is client-authoritative and the server rarely re-sends it), which would
+    /// make every `position_desync` a comparison against a frozen reference.
+    fn confirm_position(&mut self, feet: Vec3f, source: &'static str) {
+        let old = [self.position.x, self.position.y, self.position.z];
+        let new = [feet.x, feet.y, feet.z];
+        self.position = feet;
+        self.confirmations += 1;
+        tracing::info!(
+            target: "acacia_bot::position",
+            "[position] source={source} old=[{:.2}, {:.2}, {:.2}] new=[{:.2}, {:.2}, {:.2}] confirmations={}",
+            old[0], old[1], old[2], new[0], new[1], new[2], self.confirmations,
+        );
+    }
+
     pub fn apply(&mut self, packet: &RawPacket) -> Result<(), DecodeError> {
         match packet.id {
             StartGame::ID => self.on_start_game(packet.decode()?),
             MovePlayer::ID => {
                 let p: MovePlayer = packet.decode()?;
                 if u64::from(p.runtime_id) == self.runtime_entity_id {
-                    self.position = feet(p.position);
+                    self.confirm_position(feet(p.position), "MovePlayer");
                     self.yaw = p.yaw;
                     self.pitch = p.pitch;
                     self.teleports += 1;
@@ -153,7 +171,7 @@ impl PlayerState {
             CorrectPlayerMovePrediction::ID => {
                 let p: CorrectPlayerMovePrediction = packet.decode()?;
                 if p.prediction_type == CorrectPlayerMovePredictionPredictionType::Player {
-                    self.position = feet(p.position);
+                    self.confirm_position(feet(p.position), "CorrectPlayerMovePrediction");
                 }
             }
             UpdateAttributes::ID if super::leading_entity(packet) == Some(self.runtime_entity_id) => {

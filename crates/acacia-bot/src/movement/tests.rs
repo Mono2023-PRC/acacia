@@ -73,6 +73,7 @@ fn a_dimension_change_stops_the_simulation_until_it_starts_again_standing() {
     let input = m.tick(&world).unwrap();
     assert_eq!(input.tick, before + 1, "the input tick count goes on");
     // In mid-air the first input falls one tick of gravity, as the server's does.
-    let (y, fall) = (input.position.y - EYE_HEIGHT, input.delta.y);
+    // The packet carries the feet now.
+    let (y, fall) = (input.position.y, input.delta.y);
     assert!((y - 69.9216).abs() < 1e-4 && (fall + 0.155232).abs() < 1e-6, "feet {y}, delta {fall}");
 }

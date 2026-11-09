@@ -9,8 +9,6 @@ use super::geometry::Face;
 
 /// Clicks within this of the ray's end still count as reaching it.
 const SLACK: f64 = 1e-3;
-/// Points tried on a box: its centre, then inset towards its corners.
-const INSET: f32 = 0.2;
 
 pub(crate) struct Sight<'a, W: BlockAccess> {
     pub world: &'a W,
@@ -57,31 +55,98 @@ impl<W: BlockAccess> Sight<'_, W> {
     }
 
     /// Faces of the block at `pos` the eye sees, each with the world points on it the eye reaches unblocked,
-    /// nearest to the face's centre first.
+    /// nearest first. Any exposed face a ray reaches counts: every probe on every face of every box of the
+    /// shape is cast through the world's voxel walk, so a block seen past an edge (a hole's rim, a wall's end,
+    /// the sliver of a face above the floor the bot stands on) is not missed.
     pub fn visible_points(&self, eye: Vec3, pos: BlockPos) -> Vec<(Face, Vec3)> {
         let Some(state) = self.registry.get(self.world.block(pos[0], pos[1], pos[2])) else { return Vec::new() };
         let selection = selection::boxes_at(self.world, self.registry, pos);
         let boxes = if selection.is_empty() { state.boxes.to_vec() } else { selection };
-        let mut seen = Vec::new();
+        let mut seen: Vec<(Face, Vec3)> = Vec::new();
         for b in &boxes {
-            for p in samples(b) {
-                let to = [pos[0] as f32 + p[0], pos[1] as f32 + p[1], pos[2] as f32 + p[2]];
-                let Some(hit) = self.cast(eye, to, 0.05, None).filter(|h| h.block == pos) else { continue };
-                let at = hit.point.map(|c| c as f32);
-                if !seen.iter().any(|&(_, q): &(Face, Vec3)| q == at) {
-                    seen.push((Face::from_wire(hit.face), at));
+            for face in Face::ALL {
+                for p in face_probes(b, face) {
+                    let to = [pos[0] as f32 + p[0], pos[1] as f32 + p[1], pos[2] as f32 + p[2]];
+                    let Some(hit) = self.cast(eye, to, 0.05, None).filter(|h| h.block == pos) else { continue };
+                    if Face::from_wire(hit.face) != face {
+                        continue;
+                    }
+                    let at = hit.point.map(|c| c as f32);
+                    if !seen.iter().any(|&(_, q): &(Face, Vec3)| q == at) {
+                        seen.push((face, at));
+                    }
                 }
             }
         }
+        let distance = |p: Vec3| {
+            let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+        };
+        seen.sort_by(|a, b| distance(a.1).total_cmp(&distance(b.1)));
         seen
     }
+
+    /// The block standing between `eye` and the block at `pos`: of the rays aimed at one of `pos`'s faces, the
+    /// nearest thing they meet instead (t101). `None` when no ray is obstructed — then nothing is to blame and the
+    /// caller must not name one.
+    ///
+    /// The live run that asked for this: nine `not_visible` failures, five of them the *same* cell retried
+    /// (`dig [150026, 2, 149828]`, a diamond ore the bot had just found), because the message said only "behind
+    /// other blocks". Naming the occluder turns a guess into a next step: dig that one instead.
+    pub fn occluder(&self, eye: Vec3, pos: BlockPos) -> Option<BlockPos> {
+        let Some(state) = self.registry.get(self.world.block(pos[0], pos[1], pos[2])) else { return None };
+        let selection = selection::boxes_at(self.world, self.registry, pos);
+        let boxes = if selection.is_empty() { state.boxes.to_vec() } else { selection };
+        let mut best: Option<(f64, BlockPos)> = None;
+        for b in &boxes {
+            for face in Face::ALL {
+                for p in face_probes(b, face) {
+                    let to = [pos[0] as f32 + p[0], pos[1] as f32 + p[1], pos[2] as f32 + p[2]];
+                    let Some(hit) = self.cast(eye, to, 0.05, None) else { continue };
+                    if hit.block == pos {
+                        continue;
+                    }
+                    // Distance along the ray, so the nearest obstacle is named even when several are in line.
+                    let d = {
+                        let p = hit.point;
+                        let d = [p[0] - eye[0] as f64, p[1] - eye[1] as f64, p[2] - eye[2] as f64];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+                    };
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, hit.block));
+                    }
+                }
+            }
+        }
+        best.map(|(_, block)| block)
+    }
+
 }
 
-/// Block-local points inside `b`: its centre, then inset towards each corner.
-fn samples(b: &Aabb) -> impl Iterator<Item = Vec3> + '_ {
-    let c: Vec3 = std::array::from_fn(|i| (b.min[i] + b.max[i]) / 2.0);
-    let corner = move |n: usize| -> Vec3 { std::array::from_fn(|i| if n >> i & 1 == 0 { b.min[i] + (c[i] - b.min[i]) * INSET } else { b.max[i] - (b.max[i] - c[i]) * INSET }) };
-    std::iter::once(c).chain((0..8).map(corner))
+/// Probes per face axis: a face seen through a narrow gap still counts (the client aims at what its crosshair
+/// hits, not at the box's corners).
+const PROBES: usize = 4;
+/// How far inside the box a probe sits, so the ray enters through the face it was aimed at.
+const PROBE_INSET: f32 = 1e-3;
+
+/// Block-local points on `face` of `b`, a [`PROBES`]×[`PROBES`] grid nudged just inside the box.
+fn face_probes(b: &Aabb, face: Face) -> impl Iterator<Item = Vec3> + '_ {
+    let normal = face.offset();
+    let axis = (0..3).find(|&i| normal[i] != 0).expect("a face has an axis");
+    let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
+    let plane = if normal[axis] > 0 { b.max[axis] } else { b.min[axis] };
+    // Just inside the box, so a ray aimed at this face enters through it.
+    let plane = plane - if normal[axis] > 0 { PROBE_INSET } else { -PROBE_INSET };
+    (0..PROBES).flat_map(move |i| {
+        (0..PROBES).map(move |j| {
+            let at = |k: usize, n: usize| b.min[k] + (b.max[k] - b.min[k]) * (n as f32 + 0.5) / PROBES as f32;
+            let mut p = [0.0f32; 3];
+            p[axis] = plane;
+            p[u] = at(u, i);
+            p[w] = at(w, j);
+            p
+        })
+    })
 }
 
 #[cfg(test)]
@@ -104,6 +169,23 @@ mod tests {
         let r = BlockRegistry::vanilla();
         let stone = r.find("minecraft:stone", "").unwrap();
         (Cells(stones.iter().map(|&p| (p, stone)).collect(), r.air_id()), r)
+    }
+
+    #[test]
+    fn the_wall_that_hides_a_block_is_named() {
+        // t101: the bot must be able to say *what* to dig first, not just that something is in the way.
+        let (w, registry) = world(&[[2, 0, 0], [3, 0, 0], [6, 0, 0]]);
+        let sight = Sight { world: &w, registry };
+        let eye = [0.5, 0.5, 0.5];
+        assert_eq!(sight.occluder(eye, [3, 0, 0]), Some([2, 0, 0]), "the near wall, not the far stone");
+        assert!(sight.visible_points(eye, [3, 0, 0]).is_empty());
+        // Nothing in the way: no name to blame (the message keeps its old wording).
+        assert_eq!(sight.occluder(eye, [2, 0, 0]), None);
+        assert_eq!(sight.occluder(eye, [1, 0, 0]), None, "air is not an occluder");
+        // The nearest obstacle wins when two are stacked in the ray.
+        let (w, registry) = world(&[[2, 0, 0], [4, 0, 0], [5, 0, 0]]);
+        let sight = Sight { world: &w, registry };
+        assert_eq!(sight.occluder(eye, [5, 0, 0]), Some([2, 0, 0]));
     }
 
     #[test]
@@ -143,5 +225,54 @@ mod tests {
         let sight = Sight { world: &w, registry };
         assert!(!sight.clear([0.5, 1.5, 0.5], [3.5, 1.5, 0.5]));
         assert!(sight.clear([0.5, 1.5, 0.5], [1.9, 1.5, 0.5]));
+    }
+
+    #[test]
+    fn a_block_below_the_feet_is_visible_from_the_eye() {
+        // Standing on [0, -1, 0]; the cell at [0, -2, 0] is under the floor and must stay hidden, the one
+        // beside it at [1, -1, 0] has its top exposed.
+        let (w, registry) = world(&[[0, -1, 0], [0, -2, 0], [1, -1, 0]]);
+        let sight = Sight { world: &w, registry };
+        let eye = [0.5, 1.62, 0.5];
+        assert!(!sight.visible_points(eye, [1, -1, 0]).is_empty(), "the floor block beside the feet shows its top");
+        assert!(sight.visible_points(eye, [0, -2, 0]).is_empty(), "the block under the floor is enclosed");
+        // The straight-down cell is reached, and the face aimed at is Up.
+        let under = sight.visible_points(eye, [0, -1, 0]);
+        assert!(under.iter().any(|&(f, _)| f == Face::Up), "{under:?}");
+    }
+
+    #[test]
+    fn a_block_at_the_same_level_in_front_is_visible_through_its_side() {
+        let (w, registry) = world(&[[2, 0, 0], [0, -1, 0]]);
+        let sight = Sight { world: &w, registry };
+        let eye = [0.5, 1.62, 0.5];
+        let faces: Vec<Face> = sight.visible_points(eye, [2, 0, 0]).into_iter().map(|(f, _)| f).collect();
+        assert!(faces.contains(&Face::West), "the side facing the bot is visible: {faces:?}");
+        assert!(!sight.visible_points(eye, [2, 0, 0]).is_empty());
+    }
+
+    #[test]
+    fn a_block_below_and_to_the_side_is_visible_from_its_top() {
+        // Feet at y=0 over a floor at y=-1; the target at [1, -1, 0] is one down and one across: its top face
+        // (the one above the floor) is exposed, and the eye looks down on it.
+        let (w, registry) = world(&[[0, -1, 0], [1, -1, 0]]);
+        let sight = Sight { world: &w, registry };
+        let eye = [0.5, 1.62, 0.5];
+        let faces: Vec<Face> = sight.visible_points(eye, [1, -1, 0]).into_iter().map(|(f, _)| f).collect();
+        assert!(faces.contains(&Face::Up), "{faces:?}");
+        // An enclosing ceiling hides the top: then only the side that faces the bot's own column is left,
+        // and that one is covered by the floor — nothing is visible and the caller must dig its way in.
+        let (roofed, registry) = world(&[[0, -1, 0], [1, -1, 0], [1, 0, 0]]);
+        let sight = Sight { world: &roofed, registry };
+        assert!(sight.visible_points(eye, [1, -1, 0]).is_empty(), "no exposed face is left");
+    }
+
+    #[test]
+    fn a_sliver_of_the_top_face_above_a_wall_still_counts() {
+        // A fence-high shape next to the target hides most of its top; the probe grid must still find the gap.
+        let (w, registry) = world(&[[2, 0, 0], [1, 0, 0]]);
+        let sight = Sight { world: &w, registry };
+        let eye = [0.5, 1.62, 0.5];
+        assert!(!sight.visible_points(eye, [2, 0, 0]).is_empty());
     }
 }

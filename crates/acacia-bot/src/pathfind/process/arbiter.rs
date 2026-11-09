@@ -52,9 +52,18 @@ pub struct Arbiter {
     route: Option<Route>,
     cache: Arc<RolloutCache>,
     outcomes: HashMap<ProcId, Result<(), ActionError>>,
+    /// Where pilots report a refused search (t117); taken from the bot on the first tick.
+    plan_sink: Option<Arc<std::sync::Mutex<Option<super::super::opts::PlanStats>>>>,
 }
 
 impl Arbiter {
+    /// Takes the bot's slot for plan reports if it has not got one yet: one clone, once per [`Processes`] run.
+    pub fn adopt_plan_sink(&mut self, sink: Arc<std::sync::Mutex<Option<super::super::opts::PlanStats>>>) {
+        if self.plan_sink.is_none() {
+            self.plan_sink = Some(sink);
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -184,6 +193,11 @@ impl Arbiter {
             _ => {
                 let opts = self.get(id).map(|p| p.opts()).unwrap_or_default();
                 let mut pilot = Pilot::with_cache(goal.clone(), opts, self.cache.clone());
+                // The pilot is the only thing that sees a refused search; give it the bot's slot to write it into
+                // (t117), so the refusal is readable as numbers and not only as a sentence.
+                if let Some(sink) = self.plan_sink.clone() {
+                    pilot = pilot.reporting(sink);
+                }
                 if let Some(old) = self.route.take() {
                     pilot.inherit(old.pilot);
                 }

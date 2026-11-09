@@ -8,6 +8,8 @@ use crate::Bot;
 
 /// Start movement after this long with the spawn chunk loaded even without support below (5 s).
 const SPAWN_WAIT_TICKS: u32 = 100;
+/// 无论有没有方块数据，最多等这么久就开始模拟（20 s），免得卡死在加载画面。
+const SPAWN_WAIT_HARD_TICKS: u32 = 400;
 /// Solid entities this near the feet (blocks) take part in the tick: more than a tick's travel.
 const SOLID_REACH: f32 = 4.0;
 
@@ -88,7 +90,12 @@ impl Bot {
         // leave the loading screen like vanilla.
         if placed && !travelled {
             movement.spawn_wait += 1;
-            placed = crate::world::has_support_below(view, registry, feet) || movement.spawn_wait >= SPAWN_WAIT_TICKS;
+            // 请求模式下“列到了”并不等于“方块到了”：脚下这一段的子区块还没来时不能开始物理，
+            // 否则会在空区块里自由落体掉出世界（实测网易的子区块能晚十几秒才到）。
+            // 留一个更晚的兜底，避免真的悬空时永远卡在加载画面。
+            placed = crate::world::has_support_below(view, registry, feet)
+                || (movement.spawn_wait >= SPAWN_WAIT_TICKS && super::dimension::terrain_arrived(view, feet))
+                || movement.spawn_wait >= SPAWN_WAIT_HARD_TICKS;
         }
         // After the spawn the look is the player's own; the server's is from before the change.
         let (yaw, pitch) = if self.spawned { (movement.controls.yaw, movement.controls.pitch) } else { (p.yaw, p.pitch) };
