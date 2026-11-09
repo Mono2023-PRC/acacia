@@ -7,3 +7,6 @@ CLAUDE.md
 /.packs
 /assets
 /.viewer.json
+
+# acacia-agent 运行时 trace / 临时档
+.acacia-agent/
