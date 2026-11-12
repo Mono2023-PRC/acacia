@@ -302,9 +302,3 @@ taskkill //F //IM Shuttler.exe
 不用 agent、直接调 bot 库：`crates/acacia-bot/examples/` 有 53 个可跑的例子（`cargo run -p acacia-bot --example actions`），
 裸连接看 `crates/acacia-client/examples/`。
 
-## 10. 上游与许可
-
-本仓库源自 [acacia-rs/acacia](https://github.com/acacia-rs/acacia)，加上网易 2193⇄898 链路所需的
-`acacia-bot` / `acacia-agent` / `acacia-netease` 改动。许可 [MIT](LICENSE)，含 minecraft-data、Boar、
-bedsim、gophertunnel 的 MIT 数据与代码，见 [THIRD-PARTY.md](THIRD-PARTY.md)。
-贡献与漏洞报告见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
